@@ -59,13 +59,43 @@ allowed-tools: Bash, Read, Write
 
 翻译在模型内完成，不调用外部 API。Claude Code 下的具体操作：
 
-1. 读取 `incremental.json` 中的 `items_to_translate`。
+### 4.1 生成翻译
+
+1. 读取 `incremental.json` 中的 `items_to_translate`，注意每条 item 携带的 `translation_policy`：
+   - `always`：该 source 来自英文源（Reuters/Bloomberg/TechCrunch/Ars），title/summary/quote 必须翻译。
+   - `auto`：该 source 来自可能中英混杂的源（Twitter），根据原文是否含中文决定是否翻译。
+   - `never`：该 source 不需要翻译（预留）。
 2. 对每条新闻的 `title` 进行翻译。
 3. 对 Twitter 引用推文的 `quoted_text` 进行翻译。
 4. 对 Bloomberg 的 `summary` 进行翻译。
-5. Bloomberg summary 需遵循主 `SKILL.md` 中的验证与回退规则（缺译/非中文时修复一次；仍失败则回退原文并记录 warning）。
-6. 将翻译结果写入 `translated.json`，格式参见主 `SKILL.md` 中的 JSON schema。
-7. **关键**：即使 `items_to_translate` 为空，也必须写入 `{}` 到 `translated.json`，否则 finalize 会失败。
+5. 将翻译结果写入 `translated.json`，格式参见主 `SKILL.md` 中的 JSON schema。
+   - `always` policy 的 item 必须确保翻译后的 title 包含中文。
+   - `auto` policy 的 item 只在原文不含中文时才需要翻译。
+6. **关键**：即使 `items_to_translate` 为空，也必须写入 `{}` 到 `translated.json`，否则 finalize 会失败。
+
+### 4.2 校验翻译结果（新增）
+
+生成 `translated.json` 后，**必须先运行 validate-translations**，再进入 finalize：
+
+```bash
+python3 $SKILL_ROOT/scripts/run_incremental_news.py validate-translations \
+  --incremental-json $INCREMENTAL_JSON_PATH \
+  --translated-json $TRANSLATED_JSON_PATH
+```
+
+- 输出 `{"ok": true, "issue_count": 0, "issues": []}` → 翻译完整，继续 finalize。
+- 输出 `{"ok": false, "issue_count": N, "issues": [...]}` → 翻译有遗漏：
+  1. 根据 `issues` 数组中每条 issue 的 `field`、`reason`、`source_text` 定点补翻。
+  2. 只补充 issue 列出的字段，不要重翻整份 translated.json。
+  3. 补翻后**再运行一次** `validate-translations`。
+  4. 第二次 validate 即使仍有 issues，也继续 finalize（不阻断新闻收集）。
+
+validate-translations 校验范围：
+- JSON 合法性
+- `always` policy 的 URL 是否在 translated.json 中有 key
+- title/summary/quoted_text 字段是否缺失或为空
+- 翻译结果是否包含中文（对 `always` policy）
+- **不校验**：术语统一性、文风自然度、翻译质量
 
 ## 5. 与主 SKILL.md 的关系
 
@@ -76,9 +106,10 @@ allowed-tools: Bash, Read, Write
 ## 6. 兼容性说明
 
 以下主 SKILL.md 中的功能在 Claude Code 下的行为：
-- **翻译步骤（步骤8）**：由 Claude 的模型层完成，格式遵循主 SKILL.md 中定义的 JSON schema
-- **错误恢复策略**：Python 脚本中的 `PREPARE_*` / `FINALIZE_*` 错误码处理逻辑在 Claude Code 下不变；Claude 可用 `Read` 工具检查中间 JSON 文件辅助诊断
-- **输出文件**：生成的 `dailyFreshNews_YYYY-MM-DD.md` 和 `YYYY-MM-DD-HH-mm_freshNews.md` 格式与 Codex 完全一致
+- **翻译步骤（步骤8）**：由 Claude 的模型层完成，格式遵循主 SKILL.md 中定义的 JSON schema；需根据 item 的 `translation_policy` 决定翻译策略。
+- **validate-translations（步骤9）**：Python 脚本校验，所有工具行为一致；`ok=false` 时退出码仍为 0，确保模型可以读取 issues 并修复。
+- **错误恢复策略**：Python 脚本中的 `PREPARE_*` / `FINALIZE_*` 错误码处理逻辑在 Claude Code 下不变；Claude 可用 `Read` 工具检查中间 JSON 文件辅助诊断。
+- **输出文件**：生成的 `dailyFreshNews_YYYY-MM-DD.md` 和 `YYYY-MM-DD-HH-mm_freshNews.md` 格式与 Codex 完全一致。
 
 ## 7. 安装方式
 
