@@ -203,6 +203,51 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         for entry in twitter_entries:
             self.assertNotIn("retry_once", entry, f"twitter source should rely on twitter-cli retries: {entry}")
 
+    def test_default_commands_define_translation_policy(self) -> None:
+        config_path = SKILL_ROOT / "references" / "commands.json"
+        entries = read_json(config_path)
+        assert isinstance(entries, list)
+        for entry in entries:
+            assert isinstance(entry, dict)
+            self.assertIn("translation_policy", entry)
+            self.assertIn(entry["translation_policy"], {"always", "auto", "never"})
+
+    def test_pipeline_propagates_translation_policy_into_items(self) -> None:
+        run_dir = self.make_run_dir("policy-propagation")
+        current_json = run_dir / "current.json"
+        config_path = self.root / "commands.json"
+        write_json(
+            config_path,
+            [
+                {
+                    "section": "world",
+                    "translation_policy": "always",
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json; "
+                            "print(json.dumps([{'title':'Hello','url':'https://example.com/a',"
+                            "'time':'2026-04-09 12:00:00'}]))"
+                        ),
+                    ],
+                }
+            ],
+        )
+
+        result = self.run_cmd(
+            str(PIPELINE_SCRIPT),
+            "--config",
+            str(config_path),
+            "--out-json",
+            str(current_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = read_json(current_json)
+        deduped_items = payload.get("deduped_items", [])
+        self.assertEqual(len(deduped_items), 1)
+        self.assertEqual(deduped_items[0]["translation_policy"], "always")
+
     def test_prepare_requires_run_scoped_paths(self) -> None:
         current_json = self.state_dir / "tmp_current.json"
         incremental_json = self.state_dir / "tmp_incremental.json"
@@ -1013,6 +1058,152 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         result = self.run_cmd(str(INCREMENTAL_SCRIPT), "finalize", "--help")
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("--allow-overwrite-existing-run", result.stdout)
+
+    def test_validate_translations_reports_missing_entry_for_always_policy(self) -> None:
+        run_dir = self.make_run_dir("validate-missing-entry")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "world",
+            "translation_policy": "always",
+            "title": "Original English Title",
+            "raw_title": "Original English Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/always-missing",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="validate-missing-entry",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        write_json(incremental_json, payload)
+        write_json(translated_json, {})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "validate-translations",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertFalse(data["ok"])
+        self.assertGreaterEqual(data["issue_count"], 1)
+        self.assertEqual(data["issues"][0]["field"], "url")
+        self.assertEqual(data["issues"][0]["reason"], "missing_translation_entry")
+
+    def test_validate_translations_checks_twitter_quote_for_auto_policy(self) -> None:
+        run_dir = self.make_run_dir("validate-twitter-quote")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "Ilya Sutskever",
+            "translation_policy": "auto",
+            "title": "Original English Title",
+            "raw_title": "Original English Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/9?s=20",
+            "quoted_text_raw": "Original quoted tweet text",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="validate-twitter-quote",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        write_json(incremental_json, payload)
+        write_json(translated_json, {item["url"]: {"title": "中文标题"}})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "validate-translations",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertFalse(data["ok"])
+        issue_fields = {issue["field"] for issue in data["issues"]}
+        self.assertIn("quoted_text", issue_fields)
+
+    def test_validate_translations_reports_bloomberg_summary_missing(self) -> None:
+        run_dir = self.make_run_dir("validate-bloomberg-summary")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "bloomberg_main",
+            "translation_policy": "always",
+            "title": "Bloomberg title",
+            "raw_title": "Bloomberg title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://www.bloomberg.com/news/articles/example-summary",
+            "summary": "Original English summary",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="validate-bloomberg-summary",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        write_json(incremental_json, payload)
+        write_json(translated_json, {item["url"]: {"title": "中文标题"}})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "validate-translations",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertFalse(data["ok"])
+        self.assertIn("summary", {issue["field"] for issue in data["issues"]})
+
+    def test_validate_translations_returns_ok_after_patch(self) -> None:
+        run_dir = self.make_run_dir("validate-ok")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "world",
+            "translation_policy": "always",
+            "title": "Original English Title",
+            "raw_title": "Original English Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/always-ok",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="validate-ok",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        write_json(incremental_json, payload)
+        write_json(translated_json, {item["url"]: {"title": "中文标题"}})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "validate-translations",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["issue_count"], 0)
+        self.assertEqual(data["issues"], [])
 
 
 if __name__ == "__main__":

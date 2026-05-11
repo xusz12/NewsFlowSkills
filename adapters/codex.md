@@ -61,6 +61,7 @@ interface:
 ```bash
 python3 <SKILL_ROOT>/scripts/run_news_pipeline.py --config <SKILL_ROOT>/references/commands.json --out-json <RUN_DIR>/current.json
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py prepare --current-json <RUN_DIR>/current.json --state-dir <STATE_DIR> --out-json <RUN_DIR>/incremental.json
+python3 <SKILL_ROOT>/scripts/run_incremental_news.py validate-translations --incremental-json <RUN_DIR>/incremental.json --translated-json <RUN_DIR>/translated.json
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py finalize --incremental-json <RUN_DIR>/incremental.json --translated-json <RUN_DIR>/translated.json --state-dir <STATE_DIR> --out-dir <WORKDIR>
 ```
 

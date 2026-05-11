@@ -74,13 +74,24 @@ Non-recoverable prepare codes:
    - For every item, translate `title`.
    - For Twitter quote items, translate quote text when present.
    - For Bloomberg items with `summary`, translate `summary` too; final Markdown displays the translated summary under the Bloomberg item.
-   - Before `finalize`, verify Bloomberg items whose source `summary` is non-Chinese. If `translated.json` is missing a Chinese `summary_zh` / `summary`, add one in-model and rewrite `translated.json`.
-   - If a Bloomberg summary still cannot be translated after this repair attempt, continue with the original source summary. `finalize` will record a warning in the output errors section instead of failing.
    - Translation must stay in the model, not inside any script.
    - Write a JSON object into `<TRANSLATED_JSON_PATH>`:
      - Legacy format (still supported): map URL to translated title string.
      - Extended format (recommended): map URL to object with `title`, optional quote fields, and optional `summary` / `summary_zh`.
    - If `items_to_translate` is empty, still write `{}` to `<TRANSLATED_JSON_PATH>`.
+
+9. Validate translated map before finalize:
+
+```bash
+python3 <SKILL_ROOT>/scripts/run_incremental_news.py validate-translations --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH>
+```
+
+Validation workflow:
+- If validate returns `ok=true`, continue to finalize.
+- If validate returns `ok=false`, translate only the listed `issues` fields and rewrite `<TRANSLATED_JSON_PATH>`.
+- Run `validate-translations` exactly one more time after repair.
+- Do not loop indefinitely. Even if the second validate still reports issues, continue to finalize so news collection is not blocked.
+- `validate-translations` checks structure and required-field coverage only; it does not score translation style/quality.
 
 ```json
 {
@@ -96,7 +107,7 @@ Non-recoverable prepare codes:
 }
 ```
 
-9. Finalize outputs:
+10. Finalize outputs:
 
 ```bash
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py finalize --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --state-dir <STATE_DIR> --out-dir <WORKDIR>
@@ -180,9 +191,12 @@ Rules:
   - `fallback_command`: secondary command when primary still fails.
   - `treat_empty_as_failure`: treat zero valid rows as failure for retry/fallback.
   - `min_valid_items`: minimum valid rows required for success when empty-check is enabled.
+  - `translation_policy`: translation requirement policy for this source (`always`, `auto`, `never`).
 - Current policy in this skill:
   - News portal sources use `retry_once`; most also use `treat_empty_as_failure: true` and `min_valid_items: 1`.
   - Twitter sources use `retry_once` only; do not force empty-as-failure by default.
+  - Reuters/Bloomberg/TechCrunch/Ars should use `translation_policy: "always"`.
+  - Twitter should use `translation_policy: "auto"`.
 
 ## Output Contract
 

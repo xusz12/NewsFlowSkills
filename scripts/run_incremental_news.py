@@ -69,6 +69,7 @@ FINALIZE_RECOVERABLE_ERROR_CODES = frozenset(
         "FINALIZE_STATE_CHANGED_SINCE_PREPARE",
     }
 )
+VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
 
 
 class IncrementalNewsError(Exception):
@@ -188,6 +189,13 @@ def contains_cjk(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in str(text or ""))
 
 
+def normalize_translation_policy(raw: Any) -> str:
+    policy = str(raw or "auto").strip().lower() or "auto"
+    if policy in VALID_TRANSLATION_POLICIES:
+        return policy
+    return "auto"
+
+
 def normalize_item(item: Any) -> dict[str, str] | None:
     if not isinstance(item, dict):
         return None
@@ -214,6 +222,7 @@ def normalize_item(item: Any) -> dict[str, str] | None:
         "raw_title": raw_title,
         "time": normalize_time(item.get("time")),
         "url": url,
+        "translation_policy": normalize_translation_policy(item.get("translation_policy", "auto")),
     }
     if quoted_text_raw:
         payload["quoted_text_raw"] = quoted_text_raw
@@ -583,6 +592,178 @@ def get_translation_map(path: Path) -> dict[str, dict[str, str]]:
             mapping[url_text] = payload
             continue
     return mapping
+
+
+def translation_required_for_text(policy: str, source_text: str) -> bool:
+    if policy == "never":
+        return False
+    if policy == "always":
+        return True
+    return bool(source_text.strip()) and (not contains_cjk(source_text))
+
+
+def has_chinese_translated_title(translated: dict[str, str]) -> bool:
+    title = str(translated.get("title", "")).strip()
+    return bool(title) and contains_cjk(title)
+
+
+def has_chinese_translated_quote(translated: dict[str, str]) -> bool:
+    quoted_text_zh = str(translated.get("quoted_text_zh", "")).strip()
+    quoted_text = str(translated.get("quoted_text", "")).strip()
+    if quoted_text_zh and contains_cjk(quoted_text_zh):
+        return True
+    return bool(quoted_text) and contains_cjk(quoted_text)
+
+
+def has_chinese_translated_summary(translated: dict[str, str]) -> bool:
+    summary_zh = str(translated.get("summary_zh", "")).strip()
+    summary = str(translated.get("summary", "")).strip()
+    if summary_zh and contains_cjk(summary_zh):
+        return True
+    return bool(summary) and contains_cjk(summary)
+
+
+def issue_for_item(
+    *,
+    item: dict[str, str],
+    field: str,
+    reason: str,
+    source_text: str,
+) -> dict[str, str]:
+    return {
+        "section": item["section"],
+        "url": item["url"],
+        "field": field,
+        "reason": reason,
+        "source_text": source_text,
+    }
+
+
+def validate_translations(args: argparse.Namespace) -> int:
+    incremental_json_path = Path(args.incremental_json).expanduser().resolve()
+    translated_json_path = Path(args.translated_json).expanduser().resolve()
+
+    try:
+        raw_payload = load_json_file(incremental_json_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise incremental_error("VALIDATE_BAD_INCREMENTAL_JSON", str(exc)) from exc
+    if not isinstance(raw_payload, dict):
+        raise incremental_error(
+            "VALIDATE_BAD_INCREMENTAL_JSON",
+            "incremental-json must contain an object",
+        )
+
+    try:
+        translations = get_translation_map(translated_json_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise incremental_error("VALIDATE_BAD_TRANSLATED_JSON", str(exc)) from exc
+
+    items_to_translate = [
+        item
+        for item in (
+            normalize_item(entry) for entry in raw_payload.get("items_to_translate", [])
+        )
+        if item is not None
+    ]
+
+    issues: list[dict[str, str]] = []
+    for item in items_to_translate:
+        url = item["url"]
+        policy = normalize_translation_policy(item.get("translation_policy", "auto"))
+        translated = translations.get(url, {})
+        raw_title = str(item.get("raw_title", item.get("title", ""))).strip()
+
+        if policy != "never" and url not in translations:
+            issues.append(
+                issue_for_item(
+                    item=item,
+                    field="url",
+                    reason="missing_translation_entry",
+                    source_text=raw_title,
+                )
+            )
+            continue
+
+        if translation_required_for_text(policy, raw_title):
+            title_text = str(translated.get("title", "")).strip()
+            if not title_text:
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="title",
+                        reason="missing_translation",
+                        source_text=raw_title,
+                    )
+                )
+            elif not has_chinese_translated_title(translated):
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="title",
+                        reason="non_chinese_translation",
+                        source_text=raw_title,
+                    )
+                )
+
+        quoted_raw = str(item.get("quoted_text_raw", "")).strip()
+        if quoted_raw and translation_required_for_text(policy, quoted_raw):
+            if not (
+                str(translated.get("quoted_text", "")).strip()
+                or str(translated.get("quoted_text_zh", "")).strip()
+            ):
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="quoted_text",
+                        reason="missing_translation",
+                        source_text=quoted_raw,
+                    )
+                )
+            elif not has_chinese_translated_quote(translated):
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="quoted_text",
+                        reason="non_chinese_translation",
+                        source_text=quoted_raw,
+                    )
+                )
+
+        summary = str(item.get("summary", "")).strip()
+        if (
+            item.get("section") in BLOOMBERG_SECTIONS
+            and summary
+            and translation_required_for_text(policy, summary)
+        ):
+            if not (
+                str(translated.get("summary", "")).strip()
+                or str(translated.get("summary_zh", "")).strip()
+            ):
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="summary",
+                        reason="missing_translation",
+                        source_text=summary,
+                    )
+                )
+            elif not has_chinese_translated_summary(translated):
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="summary",
+                        reason="non_chinese_translation",
+                        source_text=summary,
+                    )
+                )
+
+    result = {
+        "ok": len(issues) == 0,
+        "issue_count": len(issues),
+        "issues": issues,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
 
 def translated_summary_for(item: dict[str, str], translations: dict[str, dict[str, str]]) -> str:
@@ -1192,6 +1373,14 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--state-dir", required=True, help="Directory for per-day state JSON files")
     prepare.add_argument("--out-json", required=True, help="Output incremental JSON path")
     prepare.set_defaults(handler=prepare_incremental)
+
+    validate = subparsers.add_parser(
+        "validate-translations",
+        help="Validate translated-json coverage and required translated fields",
+    )
+    validate.add_argument("--incremental-json", required=True, help="Incremental JSON from prepare")
+    validate.add_argument("--translated-json", required=True, help="Model-produced translation map JSON")
+    validate.set_defaults(handler=validate_translations)
 
     finalize = subparsers.add_parser("finalize", help="Write markdown outputs and update daily state")
     finalize.add_argument("--incremental-json", required=True, help="Incremental JSON from prepare")

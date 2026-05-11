@@ -1,6 +1,7 @@
 [
   {
     "section": "middle-east",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "ReutersBrowser",
@@ -17,6 +18,7 @@
   },
   {
     "section": "china",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "ReutersBrowser",
@@ -33,6 +35,7 @@
   },
   {
     "section": "world",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "ReutersBrowser",
@@ -49,6 +52,7 @@
   },
   {
     "section": "business",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "ReutersBrowser",
@@ -65,6 +69,7 @@
   },
   {
     "section": "technology",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "ReutersBrowser",
@@ -81,6 +86,7 @@
   },
   {
     "section": "bloomberg_politics",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "BloombergUser",
@@ -96,6 +102,7 @@
   },
   {
     "section": "bloomberg_economics",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "BloombergUser",
@@ -111,6 +118,7 @@
   },
   {
     "section": "bloomberg_tech",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "BloombergUser",
@@ -126,6 +134,7 @@
   },
   {
     "section": "techcrunch",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "TechcrunchPublic",
@@ -141,6 +150,7 @@
   },
   {
     "section": "arstechnica",
+    "translation_policy": "always",
     "command": [
       "opencli",
       "ArsPublic",
@@ -156,6 +166,7 @@
   },
   {
     "section": "Ilya Sutskever",
+    "translation_policy": "auto",
     "command": [
       "twitter",
       "user-posts",
@@ -168,6 +179,7 @@
   },
   {
     "section": "郭明錤",
+    "translation_policy": "auto",
     "command": [
       "twitter",
       "user-posts",
@@ -180,6 +192,7 @@
   },
   {
     "section": "seekinganythingbutalpha",
+    "translation_policy": "auto",
     "command": [
       "twitter",
       "user-posts",
@@ -192,6 +205,7 @@
   },
   {
     "section": "外汇交易员",
+    "translation_policy": "auto",
     "command": [
       "twitter",
       "user-posts",
@@ -204,6 +218,7 @@
   },
   {
     "section": "Time Horizon",
+    "translation_policy": "auto",
     "command": [
       "twitter",
       "user-posts",
@@ -216,6 +231,7 @@
   },
   {
     "section": "卡比卡比",
+    "translation_policy": "auto",
     "command": [
       "twitter",
       "user-posts",

@@ -20,6 +20,7 @@ NOISE_PREFIXES = (
     "(Use `node --trace-warnings",
 )
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
 
 
 def format_timestamp(dt: datetime) -> str:
@@ -158,7 +159,12 @@ def compact_text(raw: Any) -> str:
     return " ".join(text.split())
 
 
-def normalize_row(section: str, row: dict[str, Any]) -> dict[str, str] | None:
+def normalize_row(
+    section: str,
+    row: dict[str, Any],
+    *,
+    translation_policy: str,
+) -> dict[str, str] | None:
     title = str(row.get("title", "")).strip()
     url = str(row.get("url") or row.get("link") or "").strip()
     summary = compact_text(row.get("summary") or row.get("description") or "")
@@ -185,6 +191,7 @@ def normalize_row(section: str, row: dict[str, Any]) -> dict[str, str] | None:
             "title": title,
             "time": normalize_time(raw_time),
             "url": url,
+            "translation_policy": translation_policy,
         }
         if summary:
             item["summary"] = summary
@@ -216,6 +223,7 @@ def normalize_row(section: str, row: dict[str, Any]) -> dict[str, str] | None:
         "title": tweet_text,
         "time": normalize_time(row.get("createdAtLocal")),
         "url": f"https://x.com/{screen_name}/status/{tweet_id}?s=20",
+        "translation_policy": translation_policy,
         "author_name": author_name,
         "author_screen_name": screen_name,
         "quoted_text_raw": quote_text,
@@ -239,6 +247,7 @@ def execute_command_once(
     timeout_seconds: int,
     min_valid_items: int,
     treat_empty_as_failure: bool,
+    translation_policy: str,
 ) -> dict[str, Any]:
     command_str = " ".join(shlex.quote(part) for part in command)
 
@@ -289,7 +298,11 @@ def execute_command_once(
 
     items: list[dict[str, str]] = []
     for row in rows:
-        normalized = normalize_row(section, row)
+        normalized = normalize_row(
+            section,
+            row,
+            translation_policy=translation_policy,
+        )
         if normalized is None:
             continue
         items.append(normalized)
@@ -392,6 +405,11 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
         retry_once = bool(item.get("retry_once", False))
         treat_empty_as_failure = bool(item.get("treat_empty_as_failure", False))
         min_valid_items = parse_positive_int(item.get("min_valid_items", 1), default=1)
+        translation_policy = str(item.get("translation_policy", "auto")).strip().lower() or "auto"
+        if translation_policy not in VALID_TRANSLATION_POLICIES:
+            raise ValueError(
+                f"config item #{i} has invalid translation_policy: {translation_policy}"
+            )
 
         parsed.append(
             {
@@ -401,6 +419,7 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
                 "retry_once": retry_once,
                 "treat_empty_as_failure": treat_empty_as_failure,
                 "min_valid_items": min_valid_items,
+                "translation_policy": translation_policy,
             }
         )
 
@@ -426,6 +445,7 @@ def run_pipeline(
         retry_once = bool(entry.get("retry_once", False))
         treat_empty_as_failure = bool(entry.get("treat_empty_as_failure", False))
         min_valid_items = parse_positive_int(entry.get("min_valid_items", 1), default=1)
+        translation_policy = str(entry.get("translation_policy", "auto")).strip().lower() or "auto"
 
         if section not in section_order:
             section_order.append(section)
@@ -438,6 +458,7 @@ def run_pipeline(
             timeout_seconds=timeout_seconds,
             min_valid_items=min_valid_items,
             treat_empty_as_failure=treat_empty_as_failure,
+            translation_policy=translation_policy,
         )
         primary_attempts.append(first)
 
@@ -448,6 +469,7 @@ def run_pipeline(
                 timeout_seconds=timeout_seconds,
                 min_valid_items=min_valid_items,
                 treat_empty_as_failure=treat_empty_as_failure,
+                translation_policy=translation_policy,
             )
             primary_attempts.append(second)
 
@@ -462,6 +484,7 @@ def run_pipeline(
                 timeout_seconds=timeout_seconds,
                 min_valid_items=min_valid_items,
                 treat_empty_as_failure=treat_empty_as_failure,
+                translation_policy=translation_policy,
             )
             if fallback_attempt["ok"]:
                 success_attempt = fallback_attempt
