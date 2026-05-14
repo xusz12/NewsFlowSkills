@@ -63,6 +63,7 @@ python3 <SKILL_ROOT>/scripts/run_news_pipeline.py --config <SKILL_ROOT>/referenc
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py prepare --current-json <RUN_DIR>/current.json --state-dir <STATE_DIR> --out-json <RUN_DIR>/incremental.json
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py validate-translations --incremental-json <RUN_DIR>/incremental.json --translated-json <RUN_DIR>/translated.json
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py finalize --incremental-json <RUN_DIR>/incremental.json --translated-json <RUN_DIR>/translated.json --state-dir <STATE_DIR> --out-dir <WORKDIR>
+python3 <SKILL_ROOT>/scripts/export_outputs.py --daily <daily_fresh_path> --fresh <run_fresh_path>
 ```
 
 > **注意**：`<SKILL_ROOT>` 是模板占位符，不是可执行命令。Codex 实际执行前必须将其展开为字面绝对路径（如 `/Users/x/.codex/skills/newsflow`）。不要直接运行带 `<>` 的命令，也不要使用 `$SKILL_ROOT` 变量展开（见 2.2 节）。

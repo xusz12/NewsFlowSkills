@@ -113,6 +113,21 @@ Validation workflow:
 python3 <SKILL_ROOT>/scripts/run_incremental_news.py finalize --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --state-dir <STATE_DIR> --out-dir <WORKDIR>
 ```
 
+Optional export step (post-finalize):
+
+```bash
+python3 <SKILL_ROOT>/scripts/export_outputs.py --daily <daily_fresh_path> --fresh <run_fresh_path>
+```
+
+Export rules:
+- Default root directory is fixed to:
+  - `/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`
+- If the root directory does not exist, export fails with explicit error and root path.
+- Month subdirectory is auto-created as `YYYY年M月`, parsed from filenames.
+- `dailyFreshNews_YYYY-MM-DD.md` and `YYYY-MM-DD-HH-mm_freshNews.md` must resolve to the same year-month.
+- Export overwrites same-name files by default.
+- Export failure never rolls back finalized local outputs.
+
 Finalize recovery policy:
 
 - If `finalize` succeeds, continue normally.

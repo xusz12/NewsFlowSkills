@@ -37,6 +37,23 @@ bash tools/sync_install.sh
 2. 执行同步脚本安装到 Codex / Claude。
 3. 在两侧做最小验证（结构、脚本语法、关键测试）。
 
+## 导出功能（可选后处理）
+
+newsflow `finalize` 生成本地产物后，可选执行导出脚本：
+
+```bash
+python3 /Users/x/.skills/newsflow/scripts/export_outputs.py \
+  --daily <daily_fresh_path> \
+  --fresh <run_fresh_path>
+```
+
+导出规则：
+- 固定根目录：`/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`
+- 根目录必须已存在；不存在则导出失败并返回明确错误。
+- 按月份归档到 `YYYY年M月` 子目录（子目录不存在会自动创建）。
+- daily 与 fresh 文件名日期必须属于同一年月。
+- 同名文件默认覆盖。
+
 ## Codex 与 Claude newsflow 的区别
 
 两侧共享同一套核心资产，差异仅在适配层与工具专属文件：

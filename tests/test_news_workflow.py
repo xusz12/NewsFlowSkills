@@ -11,6 +11,7 @@ from pathlib import Path
 SKILL_ROOT = Path("/Users/x/.codex/skills/newsflow")
 PIPELINE_SCRIPT = SKILL_ROOT / "scripts" / "run_news_pipeline.py"
 INCREMENTAL_SCRIPT = SKILL_ROOT / "scripts" / "run_incremental_news.py"
+EXPORT_SCRIPT = SKILL_ROOT / "scripts" / "export_outputs.py"
 TIMEZONE = "Asia/Shanghai"
 
 
@@ -1058,6 +1059,39 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         result = self.run_cmd(str(INCREMENTAL_SCRIPT), "finalize", "--help")
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("--allow-overwrite-existing-run", result.stdout)
+
+    def test_export_script_help(self) -> None:
+        result = self.run_cmd(str(EXPORT_SCRIPT), "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--daily", result.stdout)
+        self.assertIn("--fresh", result.stdout)
+
+    def test_export_filename_parsing(self) -> None:
+        spec = importlib.util.spec_from_file_location("export_outputs", EXPORT_SCRIPT)
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        year, month = module.parse_daily_date(Path("dailyFreshNews_2026-03-31.md"))
+        self.assertEqual((year, month), (2026, 3))
+        year, month = module.parse_fresh_date(Path("2026-03-31-18-27_freshNews.md"))
+        self.assertEqual((year, month), (2026, 3))
+
+        with self.assertRaises(ValueError):
+            module.parse_daily_date(Path("daily_2026-03-31.md"))
+        with self.assertRaises(ValueError):
+            module.parse_fresh_date(Path("2026-03-31_freshNews.md"))
+
+    def test_export_check_root_exists(self) -> None:
+        spec = importlib.util.spec_from_file_location("export_outputs", EXPORT_SCRIPT)
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with self.assertRaises(FileNotFoundError):
+            module.check_root_exists(self.root / "not-exists")
 
     def test_validate_translations_reports_missing_entry_for_always_policy(self) -> None:
         run_dir = self.make_run_dir("validate-missing-entry")
