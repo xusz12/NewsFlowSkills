@@ -2,6 +2,16 @@
 
 本目录是 newsflow 的唯一维护源（canonical source）。
 
+## What's Changed
+
+### 2026-05-15 — docs: 补充Claude适配器可选导出步骤与兼容性说明
+- **文件**
+	- *adapters/claude.md（+16 −0）*
+		- 新增 4.3 可选导出（post-finalize），说明 `export_outputs.py` 在 Claude Code 下的调用方式
+		- 补充路径引号包裹规则与导出失败不影响产物的说明
+		- 兼容性章节新增导出脚本行为一致性的备注
+- **影响**：Claude Code 端 finalize 后可执行可选导出到 DailyNews 归档目录
+
 ## 目录角色
 
 - 维护源（唯一）：`/Users/x/.skills/newsflow`

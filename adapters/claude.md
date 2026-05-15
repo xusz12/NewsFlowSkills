@@ -97,6 +97,21 @@ validate-translations 校验范围：
 - 翻译结果是否包含中文（对 `always` policy）
 - **不校验**：术语统一性、文风自然度、翻译质量
 
+### 4.3 可选导出（post-finalize）
+
+finalize 成功后，如需将产物导出到 DailyNews 归档目录：
+
+```bash
+python3 "$SKILL_ROOT/scripts/export_outputs.py" \
+  --daily "$DAILY_FRESH_PATH" \
+  --fresh "$RUN_FRESH_PATH"
+```
+
+- `DAILY_FRESH_PATH` 和 `RUN_FRESH_PATH` 从 finalize 的 stdout JSON 中提取字段 `daily_fresh_path` 和 `run_fresh_path`。
+- **所有路径必须用双引号包裹**——默认导出根目录包含空格（`Mobile Documents`）。
+- 导出规则（月份子目录、同名覆盖、根目录不存在则失败等）参见主 `SKILL.md`。
+- 导出失败不影响已生成的本地 `.md` 产物。
+
 ## 5. 与主 SKILL.md 的关系
 
 - **主 SKILL.md**：包含完整的工作流描述、错误恢复策略、输出合同、状态模式说明、验证清单 — 这些是跨工具通用的
@@ -110,6 +125,7 @@ validate-translations 校验范围：
 - **validate-translations（步骤9）**：Python 脚本校验，所有工具行为一致；`ok=false` 时退出码仍为 0，确保模型可以读取 issues 并修复。
 - **错误恢复策略**：Python 脚本中的 `PREPARE_*` / `FINALIZE_*` 错误码处理逻辑在 Claude Code 下不变；Claude 可用 `Read` 工具检查中间 JSON 文件辅助诊断。
 - **输出文件**：生成的 `dailyFreshNews_YYYY-MM-DD.md` 和 `YYYY-MM-DD-HH-mm_freshNews.md` 格式与 Codex 完全一致。
+- **导出脚本（可选）**：`scripts/export_outputs.py` 在所有工具下行为一致；Claude Code 调用时需从 finalize stdout 提取路径参数并用双引号包裹。
 
 ## 7. 安装方式
 
