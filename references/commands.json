@@ -85,38 +85,6 @@
     "min_valid_items": 1
   },
   {
-    "section": "bloomberg_politics",
-    "translation_policy": "always",
-    "command": [
-      "opencli",
-      "BloombergUser",
-      "politics",
-      "--limit",
-      "15",
-      "--format",
-      "json"
-    ],
-    "retry_once": true,
-    "treat_empty_as_failure": true,
-    "min_valid_items": 1
-  },
-  {
-    "section": "bloomberg_economics",
-    "translation_policy": "always",
-    "command": [
-      "opencli",
-      "BloombergUser",
-      "economics",
-      "--limit",
-      "15",
-      "--format",
-      "json"
-    ],
-    "retry_once": true,
-    "treat_empty_as_failure": true,
-    "min_valid_items": 1
-  },
-  {
     "section": "bloomberg_tech",
     "translation_policy": "always",
     "command": [

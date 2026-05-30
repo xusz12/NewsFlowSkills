@@ -4,6 +4,13 @@
 
 ## What's Changed
 
+### 2026-05-30 — refactor: 移除 Bloomberg Politics/Economics 新闻源
+- **文件**
+  - *references/commands.json（+0 −32）*
+    - 移除 `bloomberg_politics` 命令配置
+    - 移除 `bloomberg_economics` 命令配置
+- **影响**：newsflow 不再抓取 Bloomberg Politics/Economics 板块
+
 ### 2026-05-15 — docs: 补充Claude适配器可选导出步骤与兼容性说明
 - **文件**
 	- *adapters/claude.md（+16 −0）*
