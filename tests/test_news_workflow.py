@@ -857,6 +857,60 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertIn("> Original quoted tweet text", run_markdown)
         self.assertNotIn("quote 未翻译，已使用原文引用", run_markdown)
 
+    def test_finalize_uses_separate_twitter_title_and_quote_translations(self) -> None:
+        run_dir = self.make_run_dir("twitter-title-quote-split")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "twitter",
+            "title": "Original main tweet text",
+            "raw_title": "Original main tweet text",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/99?s=20",
+            "quoted_text_raw": "Original quoted tweet text",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="twitter-title-quote-split",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        payload["section_order"] = ["twitter"]
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        write_json(incremental_json, payload)
+        write_json(
+            translated_json,
+            {
+                item["url"]: {
+                    "title": "主推文完整中文翻译",
+                    "quoted_text": "引用推文完整中文翻译",
+                }
+            },
+        )
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+            "--state-dir",
+            str(self.state_dir),
+            "--out-dir",
+            str(self.out_dir),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("### [主推文完整中文翻译]", run_markdown)
+        self.assertIn("> 引用推文完整中文翻译", run_markdown)
+        self.assertNotIn("Original main tweet text", run_markdown)
+        self.assertNotIn("Original quoted tweet text", run_markdown)
+
     def test_finalize_does_not_warn_for_already_chinese_visible_text(self) -> None:
         run_dir = self.make_run_dir("already-chinese-text")
         incremental_json = run_dir / "incremental.json"

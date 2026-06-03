@@ -83,7 +83,16 @@ RUNS_DIR=<STATE_DIR>/runs
 - **本文件**：仅包含 Codex 专属的执行约束和路径规范 — **不得复制或包含通用业务流程**
 - 执行 newsflow 时，同时参考两个文件以确保正确运行
 
-## 6. 兼容性说明
+## 6. Codex 翻译执行补充
+
+当你在 Codex 中手工生成 `<TRANSLATED_JSON_PATH>` 时，对 Twitter 项务必遵守：
+
+- `title` 只写主推文 `text` 的中文翻译。
+- `quoted_text` / `quoted_text_zh` 只写引用推文 `quotedTweet.text` 的中文翻译。
+- 不要把引用推文内容写进 `title`，也不要把主推文压缩成一句摘要。
+- 对长推文，优先完整翻译；保留编号、段落和主要细节，不要改写成“核心观点总结”。
+
+## 7. 兼容性说明
 
 以下主 SKILL.md 中的功能在 Codex 下的行为：
 - **翻译步骤（步骤8）**：由 Codex 的模型层完成，格式遵循主 SKILL.md 中定义的 JSON schema

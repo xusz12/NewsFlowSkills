@@ -73,6 +73,8 @@ Non-recoverable prepare codes:
    - Translate only `items_to_translate`.
    - For every item, translate `title`.
    - For Twitter quote items, translate quote text when present.
+   - For Twitter items, `title` always means the main tweet `text`, and `quoted_text` always means `quotedTweet.text`. Never swap them.
+   - For long Twitter posts, translate the main tweet and quoted tweet in full, preserving paragraph boundaries / numbering when practical. Do not summarize, compress, or rewrite them into a shorter takeaway sentence.
    - For Bloomberg items with `summary`, translate `summary` too; final Markdown displays the translated summary under the Bloomberg item.
    - Translation must stay in the model, not inside any script.
    - Write a JSON object into `<TRANSLATED_JSON_PATH>`:
@@ -261,6 +263,8 @@ Constraints:
   - URL auto-generated as `https://x.com/{screenName}/status/{id}?s=20`.
   - `createdAtLocal` -> 发布时间.
   - `quotedTweet.text` renders as blockquote.
+  - The translation map must keep the same split: main tweet translation in `title`, quoted tweet translation in `quoted_text` / `quoted_text_zh`.
+  - Long Twitter posts should be translated in full; do not collapse them into a short summary sentence.
   - If `quoted_text_zh` is provided, only Chinese quote text is rendered (no bilingual block).
   - Recommended translation policy: only translate non-Chinese text.
 - Add final block:

@@ -68,10 +68,15 @@ allowed-tools: Bash, Read, Write
 2. 对每条新闻的 `title` 进行翻译。
 3. 对 Twitter 引用推文的 `quoted_text` 进行翻译。
 4. 对 Bloomberg 的 `summary` 进行翻译。
-5. 将翻译结果写入 `translated.json`，格式参见主 `SKILL.md` 中的 JSON schema。
+5. 对 Twitter 项务必保持字段分离：
+   - `title` 只写主推文 `text` 的中文翻译；
+   - `quoted_text` / `quoted_text_zh` 只写引用推文 `quotedTweet.text` 的中文翻译；
+   - 不要把引用推文写进 `title`，也不要把长主推文压缩成一句摘要。
+   - 对长推文优先完整翻译，保留编号、段落和主要细节。
+6. 将翻译结果写入 `translated.json`，格式参见主 `SKILL.md` 中的 JSON schema。
    - `always` policy 的 item 必须确保翻译后的 title 包含中文。
    - `auto` policy 的 item 只在原文不含中文时才需要翻译。
-6. **关键**：即使 `items_to_translate` 为空，也必须写入 `{}` 到 `translated.json`，否则 finalize 会失败。
+7. **关键**：即使 `items_to_translate` 为空，也必须写入 `{}` 到 `translated.json`，否则 finalize 会失败。
 
 ### 4.2 校验翻译结果（新增）
 

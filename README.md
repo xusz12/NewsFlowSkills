@@ -4,6 +4,19 @@
 
 ## What's Changed
 
+### 2026-06-03 — docs: 明确 Twitter 翻译主推文与引用推文字段分离规则
+- **文件**
+  - *SKILL.md（+4 −0）*
+    - 新增规则：`title`=主推文翻译，`quoted_text`=引用推文翻译，不可互换
+    - 长推文必须完整翻译，禁止压缩为摘要
+  - *adapters/claude.md（+7 −2）*
+    - 新增步骤 5：Twitter 翻译字段分离约束
+  - *adapters/codex.md（+10 −1）*
+    - 新增第 6 节「Codex 翻译执行补充」
+  - *tests/test_news_workflow.py（+54 −0）*
+    - 新增字段分离验证测试
+- **影响**：Twitter 翻译不再出现主推文与引用推文混淆或长推文被压缩
+
 ### 2026-05-30 — refactor: 移除 Bloomberg Politics/Economics 新闻源
 - **文件**
   - *references/commands.json（+0 −32）*
