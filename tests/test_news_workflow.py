@@ -33,6 +33,15 @@ def load_incremental_module() -> object:
     return module
 
 
+def load_pipeline_module() -> object:
+    spec = importlib.util.spec_from_file_location("run_news_pipeline", PIPELINE_SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def make_state_payload(*, runs: list[dict], today_seen_urls: list[str] | None = None) -> dict:
     return {
         "date": "2026-04-09",
@@ -192,17 +201,81 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             current_json.resolve(),
         )
 
-    def test_default_commands_do_not_wrap_twitter_sources_with_retry_once(self) -> None:
+    def test_default_commands_use_opencli_twitter_with_native_fallback(self) -> None:
         config_path = SKILL_ROOT / "references" / "commands.json"
         entries = read_json(config_path)
         assert isinstance(entries, list)
 
         twitter_entries = [
-            entry for entry in entries if isinstance(entry, dict) and entry.get("command", [None])[0] == "twitter"
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("command", [None, None])[:2] == ["opencli", "twitter"]
         ]
         self.assertTrue(twitter_entries, "expected twitter sources in default commands.json")
         for entry in twitter_entries:
-            self.assertNotIn("retry_once", entry, f"twitter source should rely on twitter-cli retries: {entry}")
+            self.assertEqual(entry["command"][2], "tweets")
+            self.assertEqual(entry.get("fallback_command", [None])[0], "twitter")
+            self.assertEqual(entry["fallback_command"][1], "user-posts")
+            self.assertNotIn("retry_once", entry, f"twitter source should not add retry_once: {entry}")
+
+    def test_normalize_row_supports_opencli_twitter_schema(self) -> None:
+        module = load_pipeline_module()
+        row = {
+            "id": "2061869602154717517",
+            "author": "mingchikuo",
+            "name": "郭明錤｜Ming-Chi Kuo",
+            "text": "Main tweet body",
+            "created_at": "Tue Jun 02 17:56:35 +0000 2026",
+            "url": "https://x.com/mingchikuo/status/2061869602154717517",
+            "quoted_tweet": {
+                "text": "Quoted tweet body",
+            },
+        }
+
+        item = module.normalize_row(
+            "郭明錤",
+            row,
+            translation_policy="auto",
+            output_timezone="Asia/Shanghai",
+        )
+
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item["title"], "Main tweet body")
+        self.assertEqual(item["quoted_text_raw"], "Quoted tweet body")
+        self.assertEqual(item["author_name"], "郭明錤｜Ming-Chi Kuo")
+        self.assertEqual(item["author_screen_name"], "mingchikuo")
+        self.assertEqual(item["url"], "https://x.com/mingchikuo/status/2061869602154717517?s=20")
+        self.assertEqual(item["time"], "2026-06-03 01:56")
+
+    def test_normalize_row_keeps_native_twitter_schema(self) -> None:
+        module = load_pipeline_module()
+        row = {
+            "id": "42",
+            "text": "Native tweet body",
+            "createdAtLocal": "2026-06-27 09:30",
+            "author": {
+                "screenName": "ilyasut",
+                "name": "Ilya Sutskever",
+            },
+            "quotedTweet": {
+                "text": "Native quoted tweet",
+            },
+        }
+
+        item = module.normalize_row(
+            "Ilya Sutskever",
+            row,
+            translation_policy="auto",
+            output_timezone="Asia/Shanghai",
+        )
+
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item["quoted_text_raw"], "Native quoted tweet")
+        self.assertEqual(item["url"], "https://x.com/ilyasut/status/42?s=20")
+        self.assertEqual(item["time"], "2026-06-27 09:30")
 
     def test_default_commands_define_translation_policy(self) -> None:
         config_path = SKILL_ROOT / "references" / "commands.json"

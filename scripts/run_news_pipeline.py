@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 
@@ -21,6 +22,7 @@ NOISE_PREFIXES = (
 )
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
+DISPLAY_TIME_FORMAT = "%Y-%m-%d %H:%M"
 
 
 def format_timestamp(dt: datetime) -> str:
@@ -64,6 +66,41 @@ def normalize_time(raw_time: Any) -> str:
         return "页面未显示"
     text = str(raw_time).strip()
     return text if text else "页面未显示"
+
+
+def normalize_twitter_local_time(raw_time: Any, *, output_timezone: str) -> str:
+    text = str(raw_time or "").strip()
+    if not text:
+        return "页面未显示"
+
+    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%d %H:%M"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except Exception:
+            continue
+
+        if parsed.tzinfo is None:
+            return parsed.strftime(DISPLAY_TIME_FORMAT)
+        return parsed.astimezone(ZoneInfo(output_timezone)).strftime(DISPLAY_TIME_FORMAT)
+
+    return normalize_time(raw_time)
+
+
+def canonicalize_twitter_url(*, tweet_id: str, screen_name: str, fallback_url: Any) -> str:
+    cleaned_id = str(tweet_id or "").strip()
+    cleaned_screen_name = str(screen_name or "").strip().lstrip("@")
+    if cleaned_id and cleaned_screen_name:
+        return f"https://x.com/{cleaned_screen_name}/status/{cleaned_id}?s=20"
+
+    raw_url = str(fallback_url or "").strip()
+    if not raw_url:
+        return ""
+
+    parsed = urlparse(raw_url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) >= 3 and path_parts[1] == "status":
+        return f"https://x.com/{path_parts[0]}/status/{path_parts[2]}?s=20"
+    return raw_url
 
 
 def summarize_error(stdout_text: str, stderr_text: str, returncode: int) -> str:
@@ -164,6 +201,7 @@ def normalize_row(
     row: dict[str, Any],
     *,
     translation_policy: str,
+    output_timezone: str,
 ) -> dict[str, str] | None:
     title = str(row.get("title", "")).strip()
     url = str(row.get("url") or row.get("link") or "").strip()
@@ -204,25 +242,35 @@ def normalize_row(
         screen_name = str(author.get("screenName", "")).strip()
         author_name = str(author.get("name", "")).strip()
     else:
-        screen_name = ""
-        author_name = ""
+        screen_name = str(author or "").strip().lstrip("@")
+        author_name = str(row.get("name", "")).strip()
 
     if not tweet_id or not tweet_text:
         return None
 
-    if not screen_name:
+    url = canonicalize_twitter_url(
+        tweet_id=tweet_id,
+        screen_name=screen_name,
+        fallback_url=row.get("url"),
+    )
+    if not url:
         return None
 
     quote_text = ""
     quoted = row.get("quotedTweet")
+    if not isinstance(quoted, dict):
+        quoted = row.get("quoted_tweet")
     if isinstance(quoted, dict):
         quote_text = compact_text(quoted.get("text", ""))
 
     return {
         "section": section,
         "title": tweet_text,
-        "time": normalize_time(row.get("createdAtLocal")),
-        "url": f"https://x.com/{screen_name}/status/{tweet_id}?s=20",
+        "time": normalize_twitter_local_time(
+            row.get("createdAtLocal") or row.get("created_at"),
+            output_timezone=output_timezone,
+        ),
+        "url": url,
         "translation_policy": translation_policy,
         "author_name": author_name,
         "author_screen_name": screen_name,
@@ -248,6 +296,7 @@ def execute_command_once(
     min_valid_items: int,
     treat_empty_as_failure: bool,
     translation_policy: str,
+    output_timezone: str,
 ) -> dict[str, Any]:
     command_str = " ".join(shlex.quote(part) for part in command)
 
@@ -302,6 +351,7 @@ def execute_command_once(
             section,
             row,
             translation_policy=translation_policy,
+            output_timezone=output_timezone,
         )
         if normalized is None:
             continue
@@ -429,6 +479,7 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
 def run_pipeline(
     entries: list[dict[str, Any]],
     timeout_seconds: int,
+    output_timezone: str,
 ) -> dict[str, Any]:
     section_order: list[str] = []
     section_items: dict[str, list[dict[str, str]]] = {}
@@ -459,6 +510,7 @@ def run_pipeline(
             min_valid_items=min_valid_items,
             treat_empty_as_failure=treat_empty_as_failure,
             translation_policy=translation_policy,
+            output_timezone=output_timezone,
         )
         primary_attempts.append(first)
 
@@ -470,6 +522,7 @@ def run_pipeline(
                 min_valid_items=min_valid_items,
                 treat_empty_as_failure=treat_empty_as_failure,
                 translation_policy=translation_policy,
+                output_timezone=output_timezone,
             )
             primary_attempts.append(second)
 
@@ -485,6 +538,7 @@ def run_pipeline(
                 min_valid_items=min_valid_items,
                 treat_empty_as_failure=treat_empty_as_failure,
                 translation_policy=translation_policy,
+                output_timezone=output_timezone,
             )
             if fallback_attempt["ok"]:
                 success_attempt = fallback_attempt
@@ -660,6 +714,7 @@ def main() -> int:
         result = run_pipeline(
             entries,
             timeout_seconds=args.timeout,
+            output_timezone=args.timezone,
         )
     except Exception as exc:
         print(f"Pipeline error: {exc}", file=sys.stderr)

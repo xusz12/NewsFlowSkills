@@ -20,9 +20,7 @@ TWITTER_SECTIONS = {
     "seekinganythingbutalpha",
     "外汇交易员",
     "Time Horizon",
-    "数字游民Jarod",
     "卡比卡比",
-    "Aelia Capitolina",
 }
 PORTAL_SECTIONS = {
     "middle-east",
