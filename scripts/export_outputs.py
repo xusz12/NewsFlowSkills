@@ -8,8 +8,12 @@ from pathlib import Path
 
 
 DEFAULT_TARGET_ROOT = Path(
-    "/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews"
+    os.environ.get(
+        "NEWSFLOW_EXPORT_ROOT",
+        "/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews",
+    )
 )
+SIDECAR_SUFFIX = ".newsreader.json"
 
 
 def parse_daily_date(path: Path) -> tuple[int, int]:
@@ -79,6 +83,12 @@ def copy_overwrite(source: Path, target: Path) -> None:
     shutil.copy2(source, target)
 
 
+def sidecar_path_for(markdown_path: Path) -> Path:
+    if markdown_path.suffix != ".md":
+        raise ValueError("invalid_markdown_filename")
+    return markdown_path.with_suffix(SIDECAR_SUFFIX)
+
+
 def fail_payload(reason: str, target_root: Path, extra: dict | None = None) -> dict:
     payload = {
         "ok": False,
@@ -130,6 +140,34 @@ def main() -> int:
             )
         )
         return 2
+    daily_sidecar_path = sidecar_path_for(daily_path)
+    fresh_sidecar_path = sidecar_path_for(fresh_path)
+    if not daily_sidecar_path.exists():
+        print(
+            json.dumps(
+                fail_payload(
+                    "source_sidecar_not_found",
+                    target_root,
+                    {"missing_path": str(daily_sidecar_path)},
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
+    if not fresh_sidecar_path.exists():
+        print(
+            json.dumps(
+                fail_payload(
+                    "source_sidecar_not_found",
+                    target_root,
+                    {"missing_path": str(fresh_sidecar_path)},
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
 
     try:
         check_root_exists(target_root)
@@ -170,8 +208,12 @@ def main() -> int:
         ensure_writable_dir(month_dir)
         daily_target = month_dir / daily_path.name
         fresh_target = month_dir / fresh_path.name
+        daily_sidecar_target = month_dir / daily_sidecar_path.name
+        fresh_sidecar_target = month_dir / fresh_sidecar_path.name
         copy_overwrite(daily_path, daily_target)
         copy_overwrite(fresh_path, fresh_target)
+        copy_overwrite(daily_sidecar_path, daily_sidecar_target)
+        copy_overwrite(fresh_sidecar_path, fresh_sidecar_target)
     except PermissionError as exc:
         print(
             json.dumps(
@@ -197,6 +239,8 @@ def main() -> int:
         "exported": [
             {"source": str(daily_path), "target": str(daily_target)},
             {"source": str(fresh_path), "target": str(fresh_target)},
+            {"source": str(daily_sidecar_path), "target": str(daily_sidecar_target)},
+            {"source": str(fresh_sidecar_path), "target": str(fresh_sidecar_target)},
         ],
         "errors": [],
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 from pathlib import Path
 
 
-SKILL_ROOT = Path("/Users/x/.codex/skills/newsflow")
+SKILL_ROOT = Path(os.environ.get("NEWSFLOW_SKILL_ROOT", "/Users/x/.codex/skills/newsflow"))
 PIPELINE_SCRIPT = SKILL_ROOT / "scripts" / "run_news_pipeline.py"
 INCREMENTAL_SCRIPT = SKILL_ROOT / "scripts" / "run_incremental_news.py"
 EXPORT_SCRIPT = SKILL_ROOT / "scripts" / "export_outputs.py"
@@ -22,6 +23,11 @@ def write_json(path: Path, payload: object) -> None:
 
 def read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def load_incremental_module() -> object:
@@ -687,6 +693,157 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             daily_path.resolve(),
         )
 
+    def test_finalize_writes_newsreader_sidecars_with_structured_fields(self) -> None:
+        run_dir = self.make_run_dir("newsreader-sidecar")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        reuters_item = {
+            "section": "world",
+            "title": "Original Reuters Title",
+            "raw_title": "Original Reuters Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/reuters-story",
+            "translation_policy": "always",
+        }
+        bloomberg_item = {
+            "section": "bloomberg_main",
+            "title": "Original Bloomberg Title",
+            "raw_title": "Original Bloomberg Title",
+            "time": "2026-04-09 12:01:00",
+            "url": "https://www.bloomberg.com/news/articles/example-sidecar",
+            "summary": "Original Bloomberg summary",
+            "translation_policy": "always",
+        }
+        twitter_item = {
+            "section": "Ilya Sutskever",
+            "title": "Original main tweet text with enough detail",
+            "raw_title": "Original main tweet text with enough detail",
+            "time": "2026-04-09 12:02:00",
+            "url": "https://x.com/ilyasut/status/99?s=20",
+            "quoted_text_raw": "Original quoted tweet text with enough detail",
+            "author_name": "Ilya Sutskever",
+            "author_screen_name": "ilyasut",
+            "translation_policy": "auto",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="newsreader-sidecar",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[reuters_item, bloomberg_item, twitter_item],
+        )
+        payload["section_order"] = ["world", "bloomberg_main", "Ilya Sutskever"]
+        payload["current_run_errors"] = [
+            {
+                "section": "world",
+                "generated_at": "2026-04-09 12:05:00",
+                "error": "Recovered degradation example",
+            }
+        ]
+        payload["daily_errors"] = list(payload["current_run_errors"])
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        write_json(incremental_json, payload)
+        write_json(
+            translated_json,
+            {
+                reuters_item["url"]: {"title": "路透标题"},
+                bloomberg_item["url"]: {
+                    "title": "彭博标题",
+                    "summary": "Bloomberg English summary raw copy",
+                    "summary_zh": "彭博中文摘要",
+                },
+                twitter_item["url"]: {
+                    "title": "主推文完整中文翻译",
+                    "quoted_text": "引用推文完整中文翻译",
+                },
+            },
+        )
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+            "--state-dir",
+            str(self.state_dir),
+            "--out-dir",
+            str(self.out_dir),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload_out = json.loads(result.stdout)
+        run_sidecar = read_json(self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json")
+        daily_sidecar = read_json(self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json")
+        state_payload = read_json(self.today_state_path)
+
+        assert isinstance(run_sidecar, dict)
+        assert isinstance(daily_sidecar, dict)
+        self.assertEqual(run_sidecar["schema_version"], "newsreader.daily.v1")
+        self.assertEqual(daily_sidecar["schema_version"], "newsreader.daily.v1")
+        self.assertEqual(
+            Path(run_sidecar["source_markdown"]).resolve(),
+            (self.out_dir / "2026-04-09-12-05_freshNews.md").resolve(),
+        )
+        self.assertEqual(
+            Path(daily_sidecar["source_markdown"]).resolve(),
+            (self.out_dir / "dailyFreshNews_2026-04-09.md").resolve(),
+        )
+        self.assertEqual(
+            Path(payload_out["daily_sidecar_path"]).resolve(),
+            (self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json").resolve(),
+        )
+        self.assertEqual(
+            Path(state_payload["runs"][0]["run_sidecar_path"]).resolve(),
+            (self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json").resolve(),
+        )
+
+        items = run_sidecar["items"]
+        self.assertEqual([item["item_order"] for item in items], [1, 2, 3])
+
+        reuters_sidecar = items[0]
+        self.assertEqual(reuters_sidecar["source_type"], "reuters")
+        self.assertEqual(reuters_sidecar["source_name"], "Reuters")
+        self.assertEqual(reuters_sidecar["title"], "路透标题")
+        self.assertEqual(reuters_sidecar["title_raw"], "Original Reuters Title")
+
+        bloomberg_sidecar = items[1]
+        self.assertEqual(bloomberg_sidecar["source_type"], "bloomberg")
+        self.assertEqual(bloomberg_sidecar["summary"], "彭博中文摘要")
+        self.assertEqual(bloomberg_sidecar["summary_raw"], "Original Bloomberg summary")
+        self.assertEqual(bloomberg_sidecar["summary_zh"], "彭博中文摘要")
+
+        twitter_sidecar = items[2]
+        self.assertEqual(twitter_sidecar["source_type"], "twitter")
+        self.assertEqual(twitter_sidecar["source_name"], "X")
+        self.assertEqual(twitter_sidecar["title"], "主推文完整中文翻译")
+        self.assertEqual(twitter_sidecar["title_raw"], twitter_item["raw_title"])
+        self.assertEqual(twitter_sidecar["quoted_text"], "引用推文完整中文翻译")
+        self.assertEqual(twitter_sidecar["quoted_text_raw"], twitter_item["quoted_text_raw"])
+        self.assertEqual(twitter_sidecar["quoted_text_zh"], "引用推文完整中文翻译")
+        self.assertEqual(
+            twitter_sidecar["canonical_url"],
+            "https://x.com/ilyasut/status/99",
+        )
+        self.assertEqual(twitter_sidecar["author_name"], "Ilya Sutskever")
+        self.assertEqual(twitter_sidecar["author_screen_name"], "ilyasut")
+        self.assertEqual(
+            twitter_sidecar["provenance"],
+            {"translation_policy": "auto", "run_id": "newsreader-sidecar"},
+        )
+
+        self.assertEqual(
+            daily_sidecar["errors"],
+            [
+                {
+                    "label": "world",
+                    "time": "2026-04-09 12:05:00",
+                    "message": "Recovered degradation example",
+                }
+            ],
+        )
+
     def test_finalize_rejects_state_drift_since_prepare(self) -> None:
         run_dir = self.make_run_dir("drift-run")
         incremental_json = run_dir / "incremental.json"
@@ -1219,6 +1376,65 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             module.check_root_exists(self.root / "not-exists")
+
+    def test_export_copies_markdown_and_sidecars(self) -> None:
+        source_dir = self.root / "out"
+        target_root = self.root / "DailyNews"
+        month_dir = target_root / "2026年4月"
+        month_dir.mkdir(parents=True, exist_ok=True)
+
+        daily_path = source_dir / "dailyFreshNews_2026-04-09.md"
+        fresh_path = source_dir / "2026-04-09-12-05_freshNews.md"
+        daily_sidecar = source_dir / "dailyFreshNews_2026-04-09.newsreader.json"
+        fresh_sidecar = source_dir / "2026-04-09-12-05_freshNews.newsreader.json"
+        write_text(daily_path, "# daily\n")
+        write_text(fresh_path, "# fresh\n")
+        write_json(daily_sidecar, {"schema_version": "newsreader.daily.v1", "items": []})
+        write_json(fresh_sidecar, {"schema_version": "newsreader.daily.v1", "items": []})
+
+        env = dict(os.environ)
+        env["NEWSFLOW_EXPORT_ROOT"] = str(target_root)
+        result = subprocess.run(
+            [sys.executable, str(EXPORT_SCRIPT), "--daily", str(daily_path), "--fresh", str(fresh_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["exported"]), 4)
+        self.assertTrue((month_dir / daily_path.name).exists())
+        self.assertTrue((month_dir / fresh_path.name).exists())
+        self.assertTrue((month_dir / daily_sidecar.name).exists())
+        self.assertTrue((month_dir / fresh_sidecar.name).exists())
+
+    def test_export_fails_when_sidecar_is_missing(self) -> None:
+        source_dir = self.root / "out"
+        target_root = self.root / "DailyNews"
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        daily_path = source_dir / "dailyFreshNews_2026-04-09.md"
+        fresh_path = source_dir / "2026-04-09-12-05_freshNews.md"
+        fresh_sidecar = source_dir / "2026-04-09-12-05_freshNews.newsreader.json"
+        write_text(daily_path, "# daily\n")
+        write_text(fresh_path, "# fresh\n")
+        write_json(fresh_sidecar, {"schema_version": "newsreader.daily.v1", "items": []})
+
+        env = dict(os.environ)
+        env["NEWSFLOW_EXPORT_ROOT"] = str(target_root)
+        result = subprocess.run(
+            [sys.executable, str(EXPORT_SCRIPT), "--daily", str(daily_path), "--fresh", str(fresh_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "source_sidecar_not_found")
 
     def test_validate_translations_reports_missing_entry_for_always_policy(self) -> None:
         run_dir = self.make_run_dir("validate-missing-entry")

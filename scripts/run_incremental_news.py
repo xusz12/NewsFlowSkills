@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 
@@ -853,6 +854,116 @@ def finalize_item(item: dict[str, str], translations: dict[str, dict[str, str]])
     return result
 
 
+def infer_source_metadata(section: str) -> tuple[str, str]:
+    if section in TWITTER_SECTIONS:
+        return "twitter", "X"
+    if section in BLOOMBERG_SECTIONS:
+        return "bloomberg", "Bloomberg"
+    if section == "techcrunch":
+        return "site", "TechCrunch"
+    if section == "arstechnica":
+        return "site", "Ars Technica"
+    if section in PORTAL_SECTIONS:
+        return "reuters", "Reuters"
+    return "other", section
+
+
+def canonicalize_item_url(url: str, source_type: str) -> str:
+    if source_type != "twitter":
+        return url
+    parts = urlsplit(url)
+    path_parts = [segment for segment in parts.path.split("/") if segment]
+    if len(path_parts) >= 3 and path_parts[1] == "status":
+        return urlunsplit(("https", "x.com", f"/{path_parts[0]}/status/{path_parts[2]}", "", ""))
+    return urlunsplit(("https", "x.com", parts.path, "", ""))
+
+
+def sidecar_error_entry(error: dict[str, str]) -> dict[str, str]:
+    return {
+        "label": error.get("section", ""),
+        "time": error.get("generated_at", ""),
+        "message": error.get("error", ""),
+    }
+
+
+def build_newsreader_sidecar(
+    *,
+    schema_version: str,
+    date_text: str,
+    timezone_name: str,
+    generated_at: str,
+    source_markdown: Path,
+    run_id: str,
+    items_raw: list[dict[str, str]],
+    items_final: list[dict[str, str]],
+    translations: dict[str, dict[str, str]],
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
+    final_by_url = {item["url"]: item for item in items_final}
+    sidecar_items: list[dict[str, Any]] = []
+    for order, raw_item in enumerate(items_raw, start=1):
+        final_item = final_by_url.get(raw_item["url"])
+        if final_item is None:
+            continue
+        translated = translations.get(raw_item["url"], {})
+        source_type, source_name = infer_source_metadata(raw_item["section"])
+        raw_summary = str(raw_item.get("summary", "")).strip()
+        quoted_text_raw = str(
+            raw_item.get("quoted_text_raw", raw_item.get("quoted_text", ""))
+        ).strip()
+        sidecar_entry: dict[str, Any] = {
+            "item_order": order,
+            "section": raw_item["section"],
+            "source": SECTION_DISPLAY_NAMES.get(raw_item["section"], raw_item["section"]),
+            "source_type": source_type,
+            "source_name": source_name,
+            "title": final_item["title"],
+            "title_raw": raw_item["raw_title"],
+            "summary": str(final_item.get("summary", "")).strip(),
+            "summary_raw": raw_summary,
+            "published_at": raw_item["time"],
+            "url": raw_item["url"],
+            "canonical_url": canonicalize_item_url(raw_item["url"], source_type),
+            "quoted_text": str(final_item.get("quoted_text", "")).strip(),
+            "quoted_text_zh": (
+                str(translated.get("quoted_text_zh", "")).strip()
+                or str(translated.get("quoted_text", "")).strip()
+            ),
+            "provenance": {
+                "translation_policy": normalize_translation_policy(
+                    raw_item.get("translation_policy", "auto")
+                ),
+                "run_id": run_id,
+            },
+        }
+        if quoted_text_raw:
+            sidecar_entry["quoted_text_raw"] = quoted_text_raw
+        if raw_summary or sidecar_entry["summary"]:
+            sidecar_entry["summary_raw"] = raw_summary
+        if raw_item.get("author_name"):
+            sidecar_entry["author_name"] = str(raw_item.get("author_name", "")).strip()
+        if raw_item.get("author_screen_name"):
+            sidecar_entry["author_screen_name"] = str(
+                raw_item.get("author_screen_name", "")
+            ).strip()
+        if source_type == "bloomberg":
+            sidecar_entry["summary_zh"] = (
+                str(translated.get("summary_zh", "")).strip()
+                or str(translated.get("summary", "")).strip()
+            )
+        sidecar_items.append(sidecar_entry)
+
+    return {
+        "schema_version": schema_version,
+        "date": date_text,
+        "timezone": timezone_name,
+        "generated_at": generated_at,
+        "source_markdown": str(source_markdown),
+        "items": sidecar_items,
+        "errors": [sidecar_error_entry(error) for error in errors],
+    }
+
+
 def state_path_for_date(state_dir: Path, date_text: str) -> Path:
     return state_dir / f"{date_text}.json"
 
@@ -1277,6 +1388,8 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         raise incremental_error("FINALIZE_WRITE_FAILED", str(exc)) from exc
     run_fresh_path = out_dir / f"{run_file_timestamp}_freshNews.md"
     daily_fresh_path = out_dir / f"dailyFreshNews_{date_text}.md"
+    run_sidecar_path = out_dir / f"{run_file_timestamp}_freshNews.newsreader.json"
+    daily_sidecar_path = out_dir / f"dailyFreshNews_{date_text}.newsreader.json"
     if run_fresh_path.exists():
         raise incremental_error(
             "FINALIZE_OUTPUT_EXISTS",
@@ -1293,9 +1406,41 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         daily_fresh_items_final,
         daily_errors,
     )
+    run_sidecar_payload = build_newsreader_sidecar(
+        schema_version="newsreader.daily.v1",
+        date_text=date_text,
+        timezone_name=timezone_name,
+        generated_at=generated_at,
+        source_markdown=run_fresh_path,
+        run_id=run_id,
+        items_raw=run_fresh_items_raw,
+        items_final=run_fresh_items_final,
+        translations=translations,
+        errors=current_run_errors,
+    )
+    daily_sidecar_payload = build_newsreader_sidecar(
+        schema_version="newsreader.daily.v1",
+        date_text=date_text,
+        timezone_name=timezone_name,
+        generated_at=generated_at,
+        source_markdown=daily_fresh_path,
+        run_id=run_id,
+        items_raw=daily_fresh_items_final,
+        items_final=daily_fresh_items_final,
+        translations=translations,
+        errors=daily_errors,
+    )
     try:
         write_text_new_file(run_fresh_path, run_fresh_markdown)
         write_text_atomic(daily_fresh_path, daily_fresh_markdown)
+        write_text_new_file(
+            run_sidecar_path,
+            json.dumps(run_sidecar_payload, ensure_ascii=False, indent=2) + "\n",
+        )
+        write_text_atomic(
+            daily_sidecar_path,
+            json.dumps(daily_sidecar_payload, ensure_ascii=False, indent=2) + "\n",
+        )
     except FileExistsError as exc:
         raise incremental_error("FINALIZE_OUTPUT_EXISTS", str(exc)) from exc
     except Exception as exc:
@@ -1317,6 +1462,8 @@ def finalize_incremental(args: argparse.Namespace) -> int:
             "translated_json_path": str(translated_json_path),
             "run_fresh_path": str(run_fresh_path),
             "daily_fresh_path": str(daily_fresh_path),
+            "run_sidecar_path": str(run_sidecar_path),
+            "daily_sidecar_path": str(daily_sidecar_path),
             "run_fresh_count": len(run_fresh_items_final),
             "daily_fresh_count": len(daily_fresh_items_final),
             "error_count": len(current_run_errors),
@@ -1348,6 +1495,8 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         "run_artifact_dir": str(incremental_run_dir),
         "run_fresh_path": str(run_fresh_path),
         "daily_fresh_path": str(daily_fresh_path),
+        "run_sidecar_path": str(run_sidecar_path),
+        "daily_sidecar_path": str(daily_sidecar_path),
         "state_path": str(today_state_path),
         "stats": {
             "run_fresh_count": len(run_fresh_items_final),
