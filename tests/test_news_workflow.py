@@ -966,6 +966,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "raw_title": "Original English Title",
             "time": "2026-04-09 12:00:00",
             "url": "https://example.com/missing-title",
+            "translation_policy": "always",
         }
         payload = self.make_incremental_payload(
             run_dir=run_dir,
@@ -996,8 +997,12 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
             encoding="utf-8"
         )
+        run_sidecar = read_json(self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json")
+        state_payload = read_json(self.today_state_path)
         self.assertIn("Original English Title", run_markdown)
-        self.assertNotIn("title 未翻译，已使用原文标题", run_markdown)
+        self.assertIn("title 未翻译，已使用原文标题：https://example.com/missing-title", run_markdown)
+        self.assertIn("title 未翻译，已使用原文标题", state_payload["daily_errors"][0]["error"])
+        self.assertIn("title 未翻译，已使用原文标题", run_sidecar["errors"][0]["message"])
 
     def test_finalize_uses_title_translation_even_if_not_chinese(self) -> None:
         run_dir = self.make_run_dir("non-chinese-title-translation")
@@ -1009,6 +1014,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "raw_title": "Original English Title",
             "time": "2026-04-09 12:00:00",
             "url": "https://example.com/non-chinese-title",
+            "translation_policy": "always",
         }
         payload = self.make_incremental_payload(
             run_dir=run_dir,
@@ -1041,7 +1047,76 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
         self.assertNotIn("Original English Title", run_markdown)
         self.assertIn("Still English", run_markdown)
+        self.assertIn("title 翻译看起来仍非中文，已保留模型标题：https://example.com/non-chinese-title", run_markdown)
+
+    def test_finalize_does_not_warn_for_required_chinese_title(self) -> None:
+        run_dir = self.make_run_dir("chinese-title-translation")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "world",
+            "title": "Original English Title",
+            "raw_title": "Original English Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/chinese-title",
+            "translation_policy": "always",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="chinese-title-translation",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        payload["section_order"] = ["world"]
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        write_json(incremental_json, payload)
+        write_json(translated_json, {item["url"]: {"title": "中文标题"}})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "finalize", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--state-dir", str(self.state_dir),
+            "--out-dir", str(self.out_dir),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(encoding="utf-8")
+        self.assertNotIn("title 未翻译", run_markdown)
         self.assertNotIn("title 翻译看起来仍非中文", run_markdown)
+
+    def test_finalize_auto_audits_english_title_but_skips_cjk_title(self) -> None:
+        run_dir = self.make_run_dir("auto-title-audit")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        english_item = {
+            "section": "twitter", "title": "English only tweet", "raw_title": "English only tweet",
+            "time": "2026-04-09 12:00:00", "url": "https://x.com/example/status/101?s=20",
+            "translation_policy": "auto",
+        }
+        cjk_item = {
+            "section": "twitter", "title": "Mixed 中文 tweet", "raw_title": "Mixed 中文 tweet",
+            "time": "2026-04-09 12:01:00", "url": "https://x.com/example/status/102?s=20",
+            "translation_policy": "auto",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir, run_id="auto-title-audit", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=[english_item, cjk_item],
+        )
+        payload["section_order"] = ["twitter"]
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        write_json(incremental_json, payload)
+        write_json(translated_json, {english_item["url"]: {}, cjk_item["url"]: {}})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "finalize", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--state-dir", str(self.state_dir),
+            "--out-dir", str(self.out_dir),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(encoding="utf-8")
+        self.assertIn("title 未翻译，已使用原文标题：https://x.com/example/status/101?s=20", run_markdown)
+        self.assertNotIn("https://x.com/example/status/102?s=20", run_markdown.split("## errors", 1)[1])
 
     def test_finalize_uses_raw_quote_when_translation_is_missing(self) -> None:
         run_dir = self.make_run_dir("missing-quote-translation")
@@ -1581,6 +1656,177 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["issue_count"], 0)
         self.assertEqual(data["issues"], [])
+
+    def test_plan_translations_batches_long_twitter_and_skips_cjk_auto_title(self) -> None:
+        run_dir = self.make_run_dir("translation-plan")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        plan_json = run_dir / "translation-plan.json"
+        items = [
+            {
+                "section": "world", "translation_policy": "auto", "title": f"English {index}",
+                "raw_title": f"English {index}", "time": "2026-04-09 12:00:00",
+                "url": f"https://example.com/plan-{index}",
+            }
+            for index in range(9)
+        ]
+        items.insert(2, {
+            "section": "Ilya Sutskever", "translation_policy": "auto", "title": "x" * 1000,
+            "raw_title": "x" * 1000, "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/long?s=20",
+        })
+        items.append({
+            "section": "Ilya Sutskever", "translation_policy": "auto", "title": "Mixed 中文",
+            "raw_title": "Mixed 中文", "quoted_text_raw": "English quote", "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/cjk?s=20",
+        })
+        write_json(incremental_json, self.make_incremental_payload(
+            run_dir=run_dir, run_id="translation-plan", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=items,
+        ))
+        write_json(translated_json, {})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(plan_json), "--phase", "initial",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = read_json(plan_json)
+        self.assertEqual(plan["batch_size"], 8)
+        batches = plan["batches"]
+        self.assertTrue(all(len(batch["expected_urls"]) <= 8 for batch in batches))
+        long_batch = next(batch for batch in batches if "https://x.com/example/status/long?s=20" in batch["expected_urls"])
+        self.assertEqual(long_batch["expected_urls"], ["https://x.com/example/status/long?s=20"])
+        cjk_item = next(
+            item for batch in batches for item in batch["items"]
+            if item["url"] == "https://x.com/example/status/cjk?s=20"
+        )
+        self.assertEqual(cjk_item["required_fields"], ["quoted_text"])
+
+    def test_merge_translation_batch_requires_exact_urls_and_is_atomic(self) -> None:
+        run_dir = self.make_run_dir("translation-merge")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        plan_json = run_dir / "translation-plan.json"
+        item = {
+            "section": "world", "translation_policy": "always", "title": "English title",
+            "raw_title": "English title", "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/merge",
+        }
+        write_json(incremental_json, self.make_incremental_payload(
+            run_dir=run_dir, run_id="translation-merge", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=[item],
+        ))
+        original = {"https://example.com/existing": {"title": "已有中文"}}
+        write_json(translated_json, original)
+        self.assertEqual(self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(plan_json), "--phase", "initial",
+        ).returncode, 0)
+        batch_json = run_dir / "translation-initial-batch-001.json"
+        write_json(batch_json, {"https://example.com/extra": {"title": "中文"}})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "merge-translation-batch", "--plan-json", str(plan_json),
+            "--batch-id", "batch-001", "--batch-json", str(batch_json), "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[MERGE_URL_SET_MISMATCH]", result.stderr)
+        self.assertEqual(read_json(translated_json), original)
+
+        write_json(batch_json, {item["url"]: {}})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "merge-translation-batch", "--plan-json", str(plan_json),
+            "--batch-id", "batch-001", "--batch-json", str(batch_json), "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[MERGE_MISSING_REQUIRED_FIELD]", result.stderr)
+        self.assertEqual(read_json(translated_json), original)
+
+        write_json(batch_json, {item["url"]: {"title": "中文", "unexpected": "value"}})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "merge-translation-batch", "--plan-json", str(plan_json),
+            "--batch-id", "batch-001", "--batch-json", str(batch_json), "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[MERGE_INVALID_FIELDS]", result.stderr)
+        self.assertEqual(read_json(translated_json), original)
+
+        write_json(batch_json, {item["url"]: {"title": "合并后的中文标题"}})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "merge-translation-batch", "--plan-json", str(plan_json),
+            "--batch-id", "batch-001", "--batch-json", str(batch_json), "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(read_json(translated_json)[item["url"]]["title"], "合并后的中文标题")
+
+    def test_repair_plan_only_contains_remaining_fields_and_rejects_outside_artifact(self) -> None:
+        run_dir = self.make_run_dir("translation-repair")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        repair_json = run_dir / "translation-repair-plan.json"
+        item = {
+            "section": "bloomberg_main", "translation_policy": "always", "title": "English title",
+            "raw_title": "English title", "summary": "English summary", "time": "2026-04-09 12:00:00",
+            "url": "https://www.bloomberg.com/news/articles/repair",
+        }
+        write_json(incremental_json, self.make_incremental_payload(
+            run_dir=run_dir, run_id="translation-repair", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=[item],
+        ))
+        write_json(translated_json, {item["url"]: {"title": "中文标题", "summary_zh": "Still English"}})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(repair_json), "--phase", "repair",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        repair = read_json(repair_json)
+        self.assertEqual(repair["batches"][0]["items"][0]["required_fields"], ["summary"])
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(repair_json), "--phase", "repair",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[PLAN_REPAIR_ALREADY_EXISTS]", result.stderr)
+
+        bad_plan = self.root / "translation-plan.json"
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(bad_plan), "--phase", "initial",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[PLAN_BAD_ARTIFACT_PATH]", result.stderr)
+
+    def test_initial_empty_plan_initializes_translation_map_for_cjk_auto_items(self) -> None:
+        run_dir = self.make_run_dir("translation-empty-plan")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        plan_json = run_dir / "translation-plan.json"
+        item = {
+            "section": "Ilya Sutskever", "translation_policy": "auto", "title": "已有中文标题",
+            "raw_title": "已有中文标题", "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/cjk-only?s=20",
+        }
+        write_json(incremental_json, self.make_incremental_payload(
+            run_dir=run_dir, run_id="translation-empty-plan", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=[item],
+        ))
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(plan_json), "--phase", "initial",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(read_json(plan_json)["batches"], [])
+        self.assertEqual(read_json(translated_json), {})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["ok"])
 
 
 if __name__ == "__main__":

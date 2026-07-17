@@ -69,6 +69,11 @@ FINALIZE_RECOVERABLE_ERROR_CODES = frozenset(
     }
 )
 VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
+TRANSLATION_BATCH_SIZE = 8
+LONG_TWITTER_TRANSLATION_CHARS = 1000
+TRANSLATION_OUTPUT_FIELDS = frozenset(
+    {"title", "quoted_text", "quoted_text_zh", "summary", "summary_zh"}
+)
 
 
 class IncrementalNewsError(Exception):
@@ -638,6 +643,217 @@ def issue_for_item(
     }
 
 
+def required_translation_fields(
+    item: dict[str, str],
+    translated: dict[str, dict[str, str]],
+) -> list[str]:
+    """Return untranslated or non-Chinese display fields for one URL."""
+    policy = normalize_translation_policy(item.get("translation_policy", "auto"))
+    current = translated.get(item["url"], {})
+    required: list[str] = []
+    raw_title = str(item.get("raw_title", item.get("title", ""))).strip()
+    if translation_required_for_text(policy, raw_title) and not has_chinese_translated_title(current):
+        required.append("title")
+
+    quoted_raw = str(item.get("quoted_text_raw", "")).strip()
+    if quoted_raw and translation_required_for_text(policy, quoted_raw):
+        if not has_chinese_translated_quote(current):
+            required.append("quoted_text")
+
+    summary = str(item.get("summary", "")).strip()
+    if (
+        item.get("section") in BLOOMBERG_SECTIONS
+        and summary
+        and translation_required_for_text(policy, summary)
+        and not has_chinese_translated_summary(current)
+    ):
+        required.append("summary")
+    return required
+
+
+def is_long_twitter_translation(item: dict[str, str]) -> bool:
+    if item.get("section") not in TWITTER_SECTIONS:
+        return False
+    return len(item.get("raw_title", "")) + len(item.get("quoted_text_raw", "")) >= LONG_TWITTER_TRANSLATION_CHARS
+
+
+def translation_plan_item(item: dict[str, str], required_fields: list[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "section": item["section"],
+        "url": item["url"],
+        "raw_title": item["raw_title"],
+        "translation_policy": item["translation_policy"],
+        "required_fields": required_fields,
+    }
+    if item.get("quoted_text_raw"):
+        payload["quoted_text_raw"] = item["quoted_text_raw"]
+    if item.get("summary"):
+        payload["summary"] = item["summary"]
+    return payload
+
+
+def load_incremental_items(path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    payload = load_json_file(path)
+    if not isinstance(payload, dict):
+        raise ValueError("incremental-json must contain an object")
+    items = [
+        item
+        for item in (
+            normalize_item(entry) for entry in payload.get("items_to_translate", [])
+        )
+        if item is not None
+    ]
+    return payload, items
+
+
+def plan_translations(args: argparse.Namespace) -> int:
+    incremental_json_path = Path(args.incremental_json).expanduser().resolve()
+    translated_json_path = Path(args.translated_json).expanduser().resolve()
+    out_json_path = Path(args.out_json).expanduser().resolve()
+    phase = args.phase
+    run_dir = incremental_json_path.parent
+    expected_name = "translation-plan.json" if phase == "initial" else "translation-repair-plan.json"
+    if out_json_path.parent != run_dir or out_json_path.name != expected_name:
+        raise incremental_error(
+            "PLAN_BAD_ARTIFACT_PATH",
+            f"{phase} plan must be {run_dir / expected_name}",
+        )
+    if translated_json_path.parent != run_dir:
+        raise incremental_error(
+            "PLAN_BAD_ARTIFACT_PATH", "translated-json must live in the same run artifact directory"
+        )
+    if phase == "repair" and out_json_path.exists():
+        raise incremental_error(
+            "PLAN_REPAIR_ALREADY_EXISTS", "only one repair plan may be created for a run"
+        )
+    try:
+        raw_payload, items = load_incremental_items(incremental_json_path)
+        if phase == "initial" and not translated_json_path.exists():
+            write_json_file(translated_json_path, {})
+        translations = get_translation_map(translated_json_path) if translated_json_path.exists() else {}
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise incremental_error("PLAN_BAD_INPUT_JSON", str(exc)) from exc
+
+    planned = [
+        translation_plan_item(item, fields)
+        for item in items
+        if (fields := required_translation_fields(item, translations))
+    ]
+    batches: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+
+    def append_batch(entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            return
+        number = len(batches) + 1
+        batches.append(
+            {
+                "batch_id": f"batch-{number:03d}",
+                "expected_urls": [entry["url"] for entry in entries],
+                "items": entries,
+            }
+        )
+
+    for entry in planned:
+        raw_item = next(item for item in items if item["url"] == entry["url"])
+        if is_long_twitter_translation(raw_item):
+            append_batch(pending)
+            pending = []
+            append_batch([entry])
+            continue
+        pending.append(entry)
+        if len(pending) == TRANSLATION_BATCH_SIZE:
+            append_batch(pending)
+            pending = []
+    append_batch(pending)
+
+    plan = {
+        "schema_version": "newsflow.translation-plan.v1",
+        "phase": phase,
+        "run_id": str(raw_payload.get("run_id", "")).strip(),
+        "incremental_json_path": str(incremental_json_path),
+        "translated_json_path": str(translated_json_path),
+        "batch_size": TRANSLATION_BATCH_SIZE,
+        "long_twitter_chars": LONG_TWITTER_TRANSLATION_CHARS,
+        "batches": batches,
+    }
+    try:
+        write_json_file(out_json_path, plan)
+    except Exception as exc:
+        raise incremental_error("PLAN_WRITE_FAILED", str(exc)) from exc
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
+    return 0
+
+
+def required_field_present(value: dict[str, str], field: str) -> bool:
+    if field == "quoted_text":
+        return bool(value.get("quoted_text") or value.get("quoted_text_zh"))
+    if field == "summary":
+        return bool(value.get("summary") or value.get("summary_zh"))
+    return bool(value.get(field, ""))
+
+
+def merge_translation_batch(args: argparse.Namespace) -> int:
+    plan_json_path = Path(args.plan_json).expanduser().resolve()
+    batch_json_path = Path(args.batch_json).expanduser().resolve()
+    translated_json_path = Path(args.translated_json).expanduser().resolve()
+    run_dir = plan_json_path.parent
+    if plan_json_path.name not in {"translation-plan.json", "translation-repair-plan.json"}:
+        raise incremental_error("MERGE_BAD_ARTIFACT_PATH", "plan-json must be a translation plan artifact")
+    if batch_json_path.parent != run_dir or translated_json_path.parent != run_dir:
+        raise incremental_error("MERGE_BAD_ARTIFACT_PATH", "all translation artifacts must live in the same run directory")
+    try:
+        plan = load_json_file(plan_json_path)
+        batch_payload = load_json_file(batch_json_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise incremental_error("MERGE_BAD_INPUT_JSON", str(exc)) from exc
+    if not isinstance(plan, dict) or not isinstance(batch_payload, dict):
+        raise incremental_error("MERGE_BAD_INPUT_JSON", "plan-json and batch-json must contain objects")
+    phase = str(plan.get("phase", "")).strip()
+    if phase not in {"initial", "repair"}:
+        raise incremental_error("MERGE_BAD_PLAN", "translation plan has an invalid phase")
+    planned_translated_path = str(plan.get("translated_json_path", "")).strip()
+    if planned_translated_path and Path(planned_translated_path).expanduser().resolve() != translated_json_path:
+        raise incremental_error("MERGE_BAD_ARTIFACT_PATH", "translated-json must match the plan artifact")
+    expected_batch_name = f"translation-{phase}-{args.batch_id}.json"
+    if batch_json_path.name != expected_batch_name:
+        raise incremental_error("MERGE_BAD_ARTIFACT_PATH", f"batch-json must be named {expected_batch_name}")
+    batches = plan.get("batches", [])
+    batch = next((entry for entry in batches if isinstance(entry, dict) and entry.get("batch_id") == args.batch_id), None)
+    if batch is None:
+        raise incremental_error("MERGE_UNKNOWN_BATCH", f"batch-id is not present in plan: {args.batch_id}")
+    expected_urls = [str(url).strip() for url in batch.get("expected_urls", [])]
+    if set(batch_payload) != set(expected_urls) or len(batch_payload) != len(expected_urls):
+        raise incremental_error("MERGE_URL_SET_MISMATCH", "batch JSON URL keys must exactly match expected_urls")
+    normalized_batch: dict[str, dict[str, str]] = {}
+    items_by_url = {str(item.get("url", "")).strip(): item for item in batch.get("items", []) if isinstance(item, dict)}
+    for url in expected_urls:
+        raw_value = batch_payload[url]
+        if isinstance(raw_value, str):
+            value = {"title": raw_value.strip()} if raw_value.strip() else {}
+        elif isinstance(raw_value, dict):
+            unknown = set(raw_value) - TRANSLATION_OUTPUT_FIELDS
+            if unknown:
+                raise incremental_error("MERGE_INVALID_FIELDS", f"unsupported translation fields for {url}: {sorted(unknown)}")
+            value = {key: str(raw_value.get(key, "")).strip() for key in raw_value if str(raw_value.get(key, "")).strip()}
+        else:
+            raise incremental_error("MERGE_INVALID_VALUE", f"translation value for {url} must be a string or object")
+        item = items_by_url.get(url)
+        if item is None or any(not required_field_present(value, field) for field in item.get("required_fields", [])):
+            raise incremental_error("MERGE_MISSING_REQUIRED_FIELD", f"batch result misses required fields for {url}")
+        normalized_batch[url] = value
+    try:
+        existing = get_translation_map(translated_json_path) if translated_json_path.exists() else {}
+        for url, value in normalized_batch.items():
+            existing[url] = {**existing.get(url, {}), **value}
+        write_json_file(translated_json_path, existing)
+    except (OSError, ValueError) as exc:
+        raise incremental_error("MERGE_WRITE_FAILED", str(exc)) from exc
+    result = {"ok": True, "batch_id": args.batch_id, "merged_urls": expected_urls}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def validate_translations(args: argparse.Namespace) -> int:
     incremental_json_path = Path(args.incremental_json).expanduser().resolve()
     translated_json_path = Path(args.translated_json).expanduser().resolve()
@@ -672,7 +888,7 @@ def validate_translations(args: argparse.Namespace) -> int:
         translated = translations.get(url, {})
         raw_title = str(item.get("raw_title", item.get("title", ""))).strip()
 
-        if policy != "never" and url not in translations:
+        if required_translation_fields(item, {}) and url not in translations:
             issues.append(
                 issue_for_item(
                     item=item,
@@ -806,6 +1022,36 @@ def bloomberg_summary_translation_warnings(
                     ),
                 }
             )
+    return warnings
+
+
+def title_translation_warnings(
+    items: list[dict[str, str]],
+    translations: dict[str, dict[str, str]],
+) -> list[dict[str, str]]:
+    """Report required title translations that finalize must fall back from."""
+    warnings: list[dict[str, str]] = []
+    for item in items:
+        raw_title = str(item.get("raw_title", item.get("title", ""))).strip()
+        policy = normalize_translation_policy(item.get("translation_policy", "auto"))
+        if not translation_required_for_text(policy, raw_title):
+            continue
+
+        translated = translations.get(item["url"], {})
+        if not str(translated.get("title", "")).strip():
+            error = "title 未翻译，已使用原文标题"
+        elif not has_chinese_translated_title(translated):
+            error = "title 翻译看起来仍非中文，已保留模型标题"
+        else:
+            continue
+
+        warnings.append(
+            {
+                "section": item["section"],
+                "command_str": "",
+                "error": f"{error}：{item['url']}",
+            }
+        )
     return warnings
 
 
@@ -1349,10 +1595,11 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         run_fresh_items_raw,
         translations,
     )
-    for warning in bloomberg_warnings:
+    title_warnings = title_translation_warnings(run_fresh_items_raw, translations)
+    for warning in bloomberg_warnings + title_warnings:
         warning["generated_at"] = generated_at
-    current_run_errors.extend(bloomberg_warnings)
-    daily_errors.extend(bloomberg_warnings)
+    current_run_errors.extend(bloomberg_warnings + title_warnings)
+    daily_errors.extend(bloomberg_warnings + title_warnings)
 
     today_seen_urls = list(today_state["today_seen_urls"])
     today_seen_set = set(today_seen_urls)
@@ -1528,6 +1775,26 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--incremental-json", required=True, help="Incremental JSON from prepare")
     validate.add_argument("--translated-json", required=True, help="Model-produced translation map JSON")
     validate.set_defaults(handler=validate_translations)
+
+    plan = subparsers.add_parser(
+        "plan-translations",
+        help="Create deterministic model translation batches from incremental JSON",
+    )
+    plan.add_argument("--incremental-json", required=True, help="Incremental JSON from prepare")
+    plan.add_argument("--translated-json", required=True, help="Cumulative translation map JSON")
+    plan.add_argument("--out-json", required=True, help="Translation plan artifact in the run directory")
+    plan.add_argument("--phase", choices=("initial", "repair"), required=True)
+    plan.set_defaults(handler=plan_translations)
+
+    merge = subparsers.add_parser(
+        "merge-translation-batch",
+        help="Validate one model batch and atomically merge it into translated JSON",
+    )
+    merge.add_argument("--plan-json", required=True, help="Initial or repair translation plan")
+    merge.add_argument("--batch-id", required=True, help="batch_id from the translation plan")
+    merge.add_argument("--batch-json", required=True, help="Model output for this exact batch")
+    merge.add_argument("--translated-json", required=True, help="Cumulative translation map JSON")
+    merge.set_defaults(handler=merge_translation_batch)
 
     finalize = subparsers.add_parser("finalize", help="Write markdown outputs and update daily state")
     finalize.add_argument("--incremental-json", required=True, help="Incremental JSON from prepare")

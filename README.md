@@ -4,6 +4,13 @@
 
 ## What's Changed
 
+### v1.0 — 脚本化翻译批次与 URL 对账
+- **文件**
+  - *SKILL.md、scripts/run_incremental_news.py、tests/test_news_workflow.py*
+    - 新增脚本驱动的初始/一次 repair 翻译计划：每批最多 8 个 URL，超长 Twitter 单独成批。
+    - 新增单批 URL 集合精确对账、字段白名单/必填字段校验，以及通过后才执行的原子累计合并。
+    - 保留现有 CJK `auto` 规则；第二次校验仍失败时继续 finalize，并将可追踪告警写入 Markdown 与 sidecar errors。
+
 ### 2026-06-03 — docs: 明确 Twitter 翻译主推文与引用推文字段分离规则
 - **文件**
   - *SKILL.md（+4 −0）*

@@ -70,8 +70,21 @@ Non-recoverable prepare codes:
    - `run_id` / `started_at` / `finished_at`: immutable run identity fields. Downstream steps must preserve them exactly.
    - `state_snapshot`: the latest finalized daily state seen during `prepare`. `finalize` will reject stale snapshots.
 8. Translate display text into Chinese in-model:
-   - Translate only `items_to_translate`.
-   - For every item, translate `title`.
+   - Create the initial deterministic plan. The script derives required fields, keeps the existing `auto` rule that any CJK title (including mixed-language) does not need title translation, while still planning an English quote or Bloomberg summary when required.
+
+```bash
+python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --out-json <RUN_DIR>/translation-plan.json --phase initial
+```
+
+   - Translate each `batches[*].items` in `translation-plan.json`; every batch has at most 8 URLs. A Twitter item's `raw_title + quoted_text_raw` of at least 1000 characters is deliberately isolated in its own batch.
+   - Write each model result as `<RUN_DIR>/translation-initial-batch-NNN.json`, using exactly the batch's `expected_urls` as its top-level URL keys. Do not add, omit, or substitute a URL.
+   - Merge each batch only through the script, which checks the exact URL set and required fields before atomically updating the cumulative map:
+
+```bash
+python3 <SKILL_ROOT>/scripts/run_incremental_news.py merge-translation-batch --plan-json <RUN_DIR>/translation-plan.json --batch-id batch-NNN --batch-json <RUN_DIR>/translation-initial-batch-NNN.json --translated-json <TRANSLATED_JSON_PATH>
+```
+
+   - For every planned item whose `required_fields` includes `title`, translate `title`.
    - For Twitter quote items, translate quote text when present.
    - For Twitter items, `title` always means the main tweet `text`, and `quoted_text` always means `quotedTweet.text`. Never swap them.
    - For long Twitter posts, translate the main tweet and quoted tweet in full, preserving paragraph boundaries / numbering when practical. Do not summarize, compress, or rewrite them into a shorter takeaway sentence.
@@ -90,9 +103,15 @@ python3 <SKILL_ROOT>/scripts/run_incremental_news.py validate-translations --inc
 
 Validation workflow:
 - If validate returns `ok=true`, continue to finalize.
-- If validate returns `ok=false`, translate only the listed `issues` fields and rewrite `<TRANSLATED_JSON_PATH>`.
+- If validate returns `ok=false`, generate the one permitted repair plan; it contains only required fields still missing or non-Chinese, split by the same deterministic rules:
+
+```bash
+python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --out-json <RUN_DIR>/translation-repair-plan.json --phase repair
+```
+
+- Translate and merge each repair batch with `merge-translation-batch`, using `translation-repair-batch-NNN.json` and `translation-repair-plan.json`. Do not directly edit the cumulative map or create another repair plan.
 - Run `validate-translations` exactly one more time after repair.
-- Do not loop indefinitely. Even if the second validate still reports issues, continue to finalize so news collection is not blocked.
+- Do not loop indefinitely. Even if the second validate still reports title issues, continue to finalize so news collection is not blocked; report the result as a partial translation outcome, never as full translation success. `finalize` keeps the applicable fallback and records explicit warnings in Markdown `errors` and sidecar `errors`.
 - `validate-translations` checks structure and required-field coverage only; it does not score translation style/quality.
 
 ```json
