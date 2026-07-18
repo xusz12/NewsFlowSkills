@@ -4,6 +4,12 @@
 
 ## What's Changed
 
+### v1.0.1 — 翻译修复门禁与静默诊断
+- **文件**
+  - *SKILL.md、scripts/run_incremental_news.py、tests/test_news_workflow.py*
+    - 验证结果写入隐藏运行状态；未完成一次 repair 时禁止带翻译问题 finalize。
+    - 翻译诊断不再进入用户 Markdown 与 sidecar errors，采集错误仍正常展示。
+
 ### v1.0 — 脚本化翻译批次与 URL 对账
 - **文件**
   - *SKILL.md、scripts/run_incremental_news.py、tests/test_news_workflow.py*

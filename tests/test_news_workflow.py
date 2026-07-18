@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 
 
-SKILL_ROOT = Path(os.environ.get("NEWSFLOW_SKILL_ROOT", "/Users/x/.codex/skills/newsflow"))
+SKILL_ROOT = Path(
+    os.environ.get("NEWSFLOW_SKILL_ROOT", Path(__file__).resolve().parents[1])
+).resolve()
 PIPELINE_SCRIPT = SKILL_ROOT / "scripts" / "run_news_pipeline.py"
 INCREMENTAL_SCRIPT = SKILL_ROOT / "scripts" / "run_incremental_news.py"
 EXPORT_SCRIPT = SKILL_ROOT / "scripts" / "export_outputs.py"
@@ -947,14 +949,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(self.out_dir),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
-            encoding="utf-8"
-        )
-        state_payload = read_json(self.today_state_path)
-        self.assertIn("- 摘要：Original English summary", run_markdown)
-        self.assertIn("Bloomberg summary 未翻译", run_markdown)
-        self.assertIn("Bloomberg summary 未翻译", state_payload["daily_errors"][0]["error"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", result.stderr)
 
     def test_finalize_uses_raw_title_when_translation_is_missing(self) -> None:
         run_dir = self.make_run_dir("missing-title-translation")
@@ -993,16 +989,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(self.out_dir),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
-            encoding="utf-8"
-        )
-        run_sidecar = read_json(self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json")
-        state_payload = read_json(self.today_state_path)
-        self.assertIn("Original English Title", run_markdown)
-        self.assertIn("title 未翻译，已使用原文标题：https://example.com/missing-title", run_markdown)
-        self.assertIn("title 未翻译，已使用原文标题", state_payload["daily_errors"][0]["error"])
-        self.assertIn("title 未翻译，已使用原文标题", run_sidecar["errors"][0]["message"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", result.stderr)
 
     def test_finalize_uses_title_translation_even_if_not_chinese(self) -> None:
         run_dir = self.make_run_dir("non-chinese-title-translation")
@@ -1041,13 +1029,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(self.out_dir),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("Original English Title", run_markdown)
-        self.assertIn("Still English", run_markdown)
-        self.assertIn("title 翻译看起来仍非中文，已保留模型标题：https://example.com/non-chinese-title", run_markdown)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", result.stderr)
 
     def test_finalize_does_not_warn_for_required_chinese_title(self) -> None:
         run_dir = self.make_run_dir("chinese-title-translation")
@@ -1113,10 +1096,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "--out-dir", str(self.out_dir),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(encoding="utf-8")
-        self.assertIn("title 未翻译，已使用原文标题：https://x.com/example/status/101?s=20", run_markdown)
-        self.assertNotIn("https://x.com/example/status/102?s=20", run_markdown.split("## errors", 1)[1])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", result.stderr)
 
     def test_finalize_uses_raw_quote_when_translation_is_missing(self) -> None:
         run_dir = self.make_run_dir("missing-quote-translation")
@@ -1155,12 +1136,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(self.out_dir),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("> Original quoted tweet text", run_markdown)
-        self.assertNotIn("quote 未翻译，已使用原文引用", run_markdown)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", result.stderr)
 
     def test_finalize_uses_separate_twitter_title_and_quote_translations(self) -> None:
         run_dir = self.make_run_dir("twitter-title-quote-split")
@@ -1305,13 +1282,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(self.out_dir),
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("- 摘要：Original English summary", run_markdown)
-        self.assertNotIn("Bad English translation", run_markdown)
-        self.assertIn("Bloomberg summary 翻译看起来仍非中文", run_markdown)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", result.stderr)
 
     def test_finalize_marks_bad_translated_json_with_error_code(self) -> None:
         run_dir = self.make_run_dir("bad-translated-json")
@@ -1776,12 +1748,39 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         ))
         write_json(translated_json, {item["url"]: {"title": "中文标题", "summary_zh": "Still English"}})
         result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["ok"])
+        result = self.run_cmd(
             str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
             "--translated-json", str(translated_json), "--out-json", str(repair_json), "--phase", "repair",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         repair = read_json(repair_json)
         self.assertEqual(repair["batches"][0]["items"][0]["required_fields"], ["summary"])
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[VALIDATE_REPAIR_EVIDENCE_INCOMPLETE]", result.stderr)
+
+        write_json(
+            run_dir / "translation-repair-batch-001.json",
+            {item["url"]: {"summary_zh": "Still English"}},
+        )
+        malformed_repair = read_json(repair_json)
+        malformed_repair["batches"][0]["items"] = []
+        write_json(repair_json, malformed_repair)
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[VALIDATE_REPAIR_EVIDENCE_INCOMPLETE]", result.stderr)
 
         result = self.run_cmd(
             str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
@@ -1827,6 +1826,139 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(json.loads(result.stdout)["ok"])
+
+    def test_finalize_requires_repair_then_silently_falls_back_after_one_repair(self) -> None:
+        run_dir = self.make_run_dir("translation-repair-gate")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        repair_plan = run_dir / "translation-repair-plan.json"
+        batch_json = run_dir / "translation-repair-batch-001.json"
+        item = {"section": "world", "translation_policy": "always", "title": "English", "raw_title": "English", "time": "2026-04-09 12:00:00", "url": "https://example.com/gate"}
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        legacy_payload = self.make_incremental_payload(run_dir=run_dir, run_id="translation-repair-gate", started_at="2026-04-09 12:00:00", finished_at="2026-04-09 12:05:00", run_fresh_items=[item])
+        legacy_payload.pop("items_to_translate", None)
+        write_json(incremental_json, legacy_payload)
+        write_json(translated_json, {item["url"]: {"title": "Still English"}})
+        self.assertEqual(self.run_cmd(str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json)).returncode, 0)
+        blocked = self.run_cmd(str(INCREMENTAL_SCRIPT), "finalize", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json), "--state-dir", str(self.state_dir), "--out-dir", str(self.out_dir))
+        self.assertEqual(blocked.returncode, 2)
+        self.assertIn("[FINALIZE_TRANSLATION_REPAIR_REQUIRED]", blocked.stderr)
+        self.assertEqual(self.run_cmd(str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json), "--out-json", str(repair_plan), "--phase", "repair").returncode, 0)
+        write_json(batch_json, {item["url"]: {"title": "Still English"}})
+        self.assertEqual(self.run_cmd(str(INCREMENTAL_SCRIPT), "merge-translation-batch", "--plan-json", str(repair_plan), "--batch-id", "batch-001", "--batch-json", str(batch_json), "--translated-json", str(translated_json)).returncode, 0)
+        self.assertEqual(self.run_cmd(str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json)).returncode, 0)
+        allowed = self.run_cmd(str(INCREMENTAL_SCRIPT), "finalize", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json), "--state-dir", str(self.state_dir), "--out-dir", str(self.out_dir))
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertNotIn("翻译", (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(encoding="utf-8").split("## errors", 1)[1])
+
+    def test_reusing_run_directory_does_not_reuse_old_repair_plan(self) -> None:
+        run_dir = self.make_run_dir("same-path-recovery")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        initial_plan = run_dir / "translation-plan.json"
+        repair_plan = run_dir / "translation-repair-plan.json"
+        item = {
+            "section": "world", "translation_policy": "always", "title": "English",
+            "raw_title": "English", "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/same-path",
+        }
+        for run_id in ("run-a", "run-b"):
+            write_json(incremental_json, self.make_incremental_payload(
+                run_dir=run_dir, run_id=run_id, started_at="2026-04-09 12:00:00",
+                finished_at="2026-04-09 12:05:00", run_fresh_items=[item],
+            ))
+            write_json(translated_json, {item["url"]: {}})
+            self.assertEqual(self.run_cmd(
+                str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+                "--translated-json", str(translated_json), "--out-json", str(initial_plan), "--phase", "initial",
+            ).returncode, 0)
+            self.assertEqual(self.run_cmd(
+                str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+                "--translated-json", str(translated_json),
+            ).returncode, 0)
+            self.assertEqual(self.run_cmd(
+                str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+                "--translated-json", str(translated_json), "--out-json", str(repair_plan), "--phase", "repair",
+            ).returncode, 0)
+            if run_id == "run-a":
+                write_json(run_dir / "translation-repair-batch-001.json", {item["url"]: {"title": "旧结果"}})
+        self.assertEqual(read_json(repair_plan)["run_id"], "run-b")
+        self.assertFalse((run_dir / "translation-repair-batch-001.json").exists())
+
+    def test_initial_plan_cannot_masquerade_as_repair_evidence(self) -> None:
+        run_dir = self.make_run_dir("initial-plan-masquerade")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        initial_plan = run_dir / "translation-plan.json"
+        repair_plan = run_dir / "translation-repair-plan.json"
+        item = {
+            "section": "world", "translation_policy": "always", "title": "English",
+            "raw_title": "English", "time": "2026-04-09 12:00:00",
+            "url": "https://example.com/masquerade",
+        }
+        write_json(incremental_json, self.make_incremental_payload(
+            run_dir=run_dir, run_id="masquerade", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=[item],
+        ))
+        write_json(translated_json, {item["url"]: {}})
+        self.assertEqual(self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(initial_plan), "--phase", "initial",
+        ).returncode, 0)
+        plan = read_json(initial_plan)
+        write_json(repair_plan, plan)
+        write_json(run_dir / "translation-initial-batch-001.json", {item["url"]: {"title": "中文"}})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[VALIDATE_REPAIR_EVIDENCE_INCOMPLETE]", result.stderr)
+
+    def test_repair_plan_cannot_omit_one_of_multiple_batches(self) -> None:
+        run_dir = self.make_run_dir("repair-missing-batch")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        repair_plan = run_dir / "translation-repair-plan.json"
+        items = [
+            {
+                "section": "world", "translation_policy": "always", "title": f"English {index}",
+                "raw_title": f"English {index}", "time": "2026-04-09 12:00:00",
+                "url": f"https://example.com/multi-{index}",
+            }
+            for index in range(9)
+        ]
+        write_json(incremental_json, self.make_incremental_payload(
+            run_dir=run_dir, run_id="repair-missing-batch", started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00", run_fresh_items=items,
+        ))
+        write_json(translated_json, {item["url"]: {"title": "Still English"} for item in items})
+        self.assertEqual(self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        ).returncode, 0)
+        self.assertEqual(self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json), "--out-json", str(repair_plan), "--phase", "repair",
+        ).returncode, 0)
+        plan = read_json(repair_plan)
+        self.assertEqual(len(plan["batches"]), 2)
+        for batch in plan["batches"]:
+            batch_path = run_dir / f"translation-repair-{batch['batch_id']}.json"
+            write_json(batch_path, {url: {"title": "Still English"} for url in batch["expected_urls"]})
+            self.assertEqual(self.run_cmd(
+                str(INCREMENTAL_SCRIPT), "merge-translation-batch", "--plan-json", str(repair_plan),
+                "--batch-id", batch["batch_id"], "--batch-json", str(batch_path),
+                "--translated-json", str(translated_json),
+            ).returncode, 0)
+        plan["batches"] = plan["batches"][:1]
+        write_json(repair_plan, plan)
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[VALIDATE_REPAIR_EVIDENCE_INCOMPLETE]", result.stderr)
 
 
 if __name__ == "__main__":

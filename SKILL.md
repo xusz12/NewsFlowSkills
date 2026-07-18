@@ -111,7 +111,9 @@ python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --increme
 
 - Translate and merge each repair batch with `merge-translation-batch`, using `translation-repair-batch-NNN.json` and `translation-repair-plan.json`. Do not directly edit the cumulative map or create another repair plan.
 - Run `validate-translations` exactly one more time after repair.
-- Do not loop indefinitely. Even if the second validate still reports title issues, continue to finalize so news collection is not blocked; report the result as a partial translation outcome, never as full translation success. `finalize` keeps the applicable fallback and records explicit warnings in Markdown `errors` and sidecar `errors`.
+- Validation automatically records hidden run-scoped state in `translation-validation.json`. Do not edit it. If initial validation has issues, `finalize` rejects the run until one repair plan and a second validation have been completed.
+- Translation diagnostics remain in the hidden validation state; they are not rendered in Markdown or news-reader sidecar `errors`.
+- Do not loop indefinitely. Even if the second validate still reports title issues, continue to finalize so news collection is not blocked; report the result as a partial translation outcome, never as full translation success. Diagnostics remain only in hidden run state, not user output errors.
 - `validate-translations` checks structure and required-field coverage only; it does not score translation style/quality.
 
 ```json
@@ -157,7 +159,7 @@ Finalize recovery policy:
 - After rerunning `prepare`, reuse the existing `translated.json` as a base, translate only newly missing `items_to_translate` fields, then rerun `finalize` once.
 - Do not rerun the pipeline as part of finalize recovery. If the same `current.json` is rejected during the new `prepare`, stop and report that the current artifact is no longer usable against the latest state.
 - Do not retry `FINALIZE_OUTPUT_EXISTS`, `FINALIZE_WRITE_FAILED`, bad artifact paths, bad JSON, bad metadata, bad state, or already-finalized runs.
-- Bloomberg summary translation issues are handled before `finalize` by repairing `translated.json`; if still unresolved, `finalize` uses the original summary and records a warning instead of returning a failure.
+- Bloomberg summary translation issues are handled before `finalize` by repairing `translated.json`; if still unresolved after one repair, `finalize` uses the original summary and keeps diagnostics in hidden run state.
 
 Recoverable finalize codes:
 
@@ -271,7 +273,7 @@ Example empty-group summary:
 Constraints:
 - Missing time must be `页面未显示`.
 - Bloomberg summaries should be rendered in Chinese when translation is available. The translation map may use `summary` or `summary_zh`; `summary_zh` is preferred for clarity.
-- If a non-Chinese Bloomberg summary is present but its translated summary is missing or still non-Chinese after one repair attempt, `finalize` must write the original source summary and record a warning in errors instead of failing.
+- If a non-Chinese Bloomberg summary is present but its translated summary is missing or still non-Chinese after one repair attempt, `finalize` writes the original source summary without adding a user-visible error.
 - Preserve first-seen order: command order first, then source order.
 - Global dedupe key is absolute URL exact match.
 - Daily filtering removes yesterday's URLs.

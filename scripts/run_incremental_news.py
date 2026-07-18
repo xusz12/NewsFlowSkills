@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -696,14 +697,135 @@ def load_incremental_items(path: Path) -> tuple[dict[str, Any], list[dict[str, s
     payload = load_json_file(path)
     if not isinstance(payload, dict):
         raise ValueError("incremental-json must contain an object")
-    items = [
-        item
-        for item in (
-            normalize_item(entry) for entry in payload.get("items_to_translate", [])
-        )
-        if item is not None
-    ]
+    items = [item for item in (normalize_item(entry) for entry in translation_input_entries(payload)) if item is not None]
     return payload, items
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def translation_validation_path(run_dir: Path) -> Path:
+    return run_dir / "translation-validation.json"
+
+
+def translation_input_entries(raw_payload: dict[str, Any]) -> list[Any]:
+    """Return translation candidates, including legacy/manual incremental payloads."""
+    entries = raw_payload.get("items_to_translate")
+    if isinstance(entries, list) and entries:
+        return entries
+    for key in ("run_fresh_items_raw", "current_run_items_raw"):
+        fallback = raw_payload.get(key)
+        if isinstance(fallback, list) and fallback:
+            return fallback
+    return entries if isinstance(entries, list) else []
+
+
+def translation_issue_count(raw_payload: dict[str, Any], translations: dict[str, dict[str, str]]) -> int:
+    return sum(
+        len(required_translation_fields(item, translations))
+        for item in (normalize_item(entry) for entry in translation_input_entries(raw_payload))
+        if item is not None
+    )
+
+
+def valid_validation_record(record: Any, *, incremental_path: Path, translated_path: Path, phase: str) -> bool:
+    return isinstance(record, dict) and record.get("phase") == phase and record.get("incremental_sha256") == file_sha256(incremental_path) and record.get("translated_sha256") == file_sha256(translated_path)
+
+
+def plan_evidence(
+    plan_path: Path,
+    incremental_path: Path,
+    translated_path: Path,
+    translated: dict[str, dict[str, str]],
+) -> dict[str, Any] | None:
+    try:
+        plan = load_json_file(plan_path)
+    except (FileNotFoundError, ValueError):
+        return None
+    if (
+        not isinstance(plan, dict)
+        or plan_path.name != "translation-repair-plan.json"
+        or plan.get("schema_version") != "newsflow.translation-plan.v1"
+        or plan.get("phase") != "repair"
+        or Path(str(plan.get("incremental_json_path", ""))).expanduser().resolve() != incremental_path
+        or plan.get("incremental_sha256") != file_sha256(incremental_path)
+    ):
+        return None
+    try:
+        raw_payload = load_json_file(incremental_path)
+    except (FileNotFoundError, ValueError):
+        return None
+    if not isinstance(raw_payload, dict) or plan.get("run_id") != str(raw_payload.get("run_id", "")).strip():
+        return None
+    planned_translated = Path(str(plan.get("translated_json_path", ""))).expanduser().resolve()
+    if not planned_translated or planned_translated != translated_path:
+        return None
+    if not plan.get("batches") and any(
+        required_translation_fields(item, translated)
+        for item in (normalize_item(entry) for entry in translation_input_entries(raw_payload))
+        if item is not None
+    ):
+        return None
+    batch_hashes: dict[str, str] = {}
+    plan_coverage: set[tuple[str, str]] = set()
+    for batch in plan.get("batches", []):
+        if not isinstance(batch, dict):
+            return None
+        batch_id = str(batch.get("batch_id", "")).strip()
+        if not batch_id or batch_id in batch_hashes:
+            return None
+        expected_raw = batch.get("expected_urls")
+        items = batch.get("items")
+        if not isinstance(expected_raw, list) or not expected_raw or not isinstance(items, list):
+            return None
+        expected = [str(url).strip() for url in expected_raw]
+        item_urls = [str(item.get("url", "")).strip() for item in items if isinstance(item, dict)]
+        if (
+            any(not url for url in expected)
+            or len(set(expected)) != len(expected)
+            or len(item_urls) != len(items)
+            or any(not url for url in item_urls)
+            or len(set(item_urls)) != len(item_urls)
+            or len(item_urls) != len(expected)
+            or set(item_urls) != set(expected)
+        ):
+            return None
+        batch_path = plan_path.parent / f"translation-{plan.get('phase')}-{batch_id}.json"
+        try:
+            payload = load_json_file(batch_path)
+        except (FileNotFoundError, ValueError):
+            return None
+        if not isinstance(payload, dict) or len(payload) != len(expected) or set(payload) != set(expected):
+            return None
+        for item in items:
+            url = str(item.get("url", "")).strip()
+            required_fields = item.get("required_fields")
+            if not isinstance(required_fields, list) or not required_fields:
+                return None
+            normalized_fields = [str(field).strip() for field in required_fields]
+            if any(not field for field in normalized_fields) or len(set(normalized_fields)) != len(normalized_fields):
+                return None
+            plan_coverage.update((url, field) for field in normalized_fields)
+            raw_value = payload.get(url)
+            if isinstance(raw_value, str):
+                value = {"title": raw_value.strip()} if raw_value.strip() else {}
+            elif isinstance(raw_value, dict) and not (set(raw_value) - TRANSLATION_OUTPUT_FIELDS):
+                value = {key: str(raw_value.get(key, "")).strip() for key in raw_value if str(raw_value.get(key, "")).strip()}
+            else:
+                return None
+            if url not in translated or any(not required_field_present(value, field) for field in item.get("required_fields", [])) or any(translated[url].get(key) != text for key, text in value.items()):
+                return None
+        batch_hashes[batch_id] = file_sha256(batch_path)
+    remaining_issues = {
+        (item["url"], field)
+        for item in (normalize_item(entry) for entry in translation_input_entries(raw_payload))
+        if item is not None
+        for field in required_translation_fields(item, translated)
+    }
+    if not remaining_issues.issubset(plan_coverage):
+        return None
+    return {"plan_sha256": file_sha256(plan_path), "batch_sha256": batch_hashes}
 
 
 def plan_translations(args: argparse.Namespace) -> int:
@@ -712,6 +834,11 @@ def plan_translations(args: argparse.Namespace) -> int:
     out_json_path = Path(args.out_json).expanduser().resolve()
     phase = args.phase
     run_dir = incremental_json_path.parent
+    try:
+        current_run_id = str(load_json_file(incremental_json_path).get("run_id", "")).strip()
+        current_incremental_sha256 = file_sha256(incremental_json_path)
+    except (FileNotFoundError, OSError, ValueError, AttributeError) as exc:
+        raise incremental_error("PLAN_BAD_INPUT_JSON", str(exc)) from exc
     expected_name = "translation-plan.json" if phase == "initial" else "translation-repair-plan.json"
     if out_json_path.parent != run_dir or out_json_path.name != expected_name:
         raise incremental_error(
@@ -723,9 +850,46 @@ def plan_translations(args: argparse.Namespace) -> int:
             "PLAN_BAD_ARTIFACT_PATH", "translated-json must live in the same run artifact directory"
         )
     if phase == "repair" and out_json_path.exists():
-        raise incremental_error(
-            "PLAN_REPAIR_ALREADY_EXISTS", "only one repair plan may be created for a run"
-        )
+        try:
+            old_plan = load_json_file(out_json_path)
+        except ValueError:
+            old_plan = {}
+        if (
+            isinstance(old_plan, dict)
+            and Path(str(old_plan.get("incremental_json_path", ""))).expanduser().resolve() == incremental_json_path
+            and old_plan.get("run_id") == current_run_id
+            and old_plan.get("incremental_sha256") == current_incremental_sha256
+        ):
+            raise incremental_error("PLAN_REPAIR_ALREADY_EXISTS", "only one repair plan may be created for a run")
+    if phase == "initial":
+        # A new prepare may reuse the run directory; never let same-named old batches
+        # serve as evidence for the new incremental identity.
+        for stale_path in run_dir.glob("translation-initial-batch-*.json"):
+            stale_path.unlink()
+        repair_path = run_dir / "translation-repair-plan.json"
+        if repair_path.exists():
+            try:
+                old_repair = load_json_file(repair_path)
+            except ValueError:
+                old_repair = {}
+            if (
+                not isinstance(old_repair, dict)
+                or Path(str(old_repair.get("incremental_json_path", ""))).expanduser().resolve() != incremental_json_path
+                or old_repair.get("run_id") != current_run_id
+                or old_repair.get("incremental_sha256") != current_incremental_sha256
+            ):
+                repair_path.unlink()
+                for stale_path in run_dir.glob("translation-repair-batch-*.json"):
+                    stale_path.unlink()
+    if phase == "repair":
+        receipt_path = translation_validation_path(run_dir)
+        try:
+            receipt = load_json_file(receipt_path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise incremental_error("PLAN_REPAIR_VALIDATION_REQUIRED", str(exc)) from exc
+        initial = receipt.get("initial") if isinstance(receipt, dict) else None
+        if not valid_validation_record(initial, incremental_path=incremental_json_path, translated_path=translated_json_path, phase="initial") or initial.get("ok"):
+            raise incremental_error("PLAN_REPAIR_VALIDATION_REQUIRED", "repair requires a current failed initial validation")
     try:
         raw_payload, items = load_incremental_items(incremental_json_path)
         if phase == "initial" and not translated_json_path.exists():
@@ -771,6 +935,7 @@ def plan_translations(args: argparse.Namespace) -> int:
         "schema_version": "newsflow.translation-plan.v1",
         "phase": phase,
         "run_id": str(raw_payload.get("run_id", "")).strip(),
+        "incremental_sha256": current_incremental_sha256,
         "incremental_json_path": str(incremental_json_path),
         "translated_json_path": str(translated_json_path),
         "batch_size": TRANSLATION_BATCH_SIZE,
@@ -876,7 +1041,7 @@ def validate_translations(args: argparse.Namespace) -> int:
     items_to_translate = [
         item
         for item in (
-            normalize_item(entry) for entry in raw_payload.get("items_to_translate", [])
+            normalize_item(entry) for entry in translation_input_entries(raw_payload)
         )
         if item is not None
     ]
@@ -977,6 +1142,38 @@ def validate_translations(args: argparse.Namespace) -> int:
         "issue_count": len(issues),
         "issues": issues,
     }
+    run_dir = incremental_json_path.parent
+    repair_plan = run_dir / "translation-repair-plan.json"
+    evidence = None
+    phase = "initial"
+    if repair_plan.exists():
+        try:
+            repair_payload = load_json_file(repair_plan)
+        except ValueError as exc:
+            raise incremental_error("VALIDATE_REPAIR_EVIDENCE_INCOMPLETE", str(exc)) from exc
+        same_incremental = isinstance(repair_payload, dict) and Path(str(repair_payload.get("incremental_json_path", ""))).expanduser().resolve() == incremental_json_path
+        if same_incremental:
+            evidence = plan_evidence(repair_plan, incremental_json_path, translated_json_path, translations)
+            if evidence is None:
+                raise incremental_error("VALIDATE_REPAIR_EVIDENCE_INCOMPLETE", "repair plan batches are incomplete or not merged")
+            phase = "repair"
+    receipt_path = translation_validation_path(run_dir)
+    try:
+        receipt = load_json_file(receipt_path) if receipt_path.exists() else {"schema_version": "newsflow.translation-validation.v1"}
+        if not isinstance(receipt, dict):
+            receipt = {"schema_version": "newsflow.translation-validation.v1"}
+        receipt[phase] = {
+            "phase": phase,
+            "run_id": str(raw_payload.get("run_id", "")).strip(),
+            "incremental_sha256": file_sha256(incremental_json_path),
+            "translated_sha256": file_sha256(translated_json_path),
+            **result,
+        }
+        if evidence is not None:
+            receipt[phase]["evidence"] = evidence
+        write_json_file(receipt_path, receipt)
+    except (OSError, ValueError) as exc:
+        raise incremental_error("VALIDATE_WRITE_RECEIPT_FAILED", str(exc)) from exc
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -1446,6 +1643,26 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         translations = get_translation_map(translated_json_path)
     except (FileNotFoundError, ValueError) as exc:
         raise incremental_error("FINALIZE_BAD_TRANSLATED_JSON", str(exc)) from exc
+    current_translation_issue_count = translation_issue_count(raw_payload, translations)
+    if current_translation_issue_count:
+        receipt_path = translation_validation_path(incremental_run_dir)
+        try:
+            receipt = load_json_file(receipt_path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise incremental_error("FINALIZE_TRANSLATION_REPAIR_REQUIRED", str(exc)) from exc
+        repair = receipt.get("repair") if isinstance(receipt, dict) else None
+        if not valid_validation_record(
+            repair,
+            incremental_path=incremental_json_path,
+            translated_path=translated_json_path,
+            phase="repair",
+        ) or not repair.get("evidence") or repair.get("evidence") != plan_evidence(
+            incremental_run_dir / "translation-repair-plan.json", incremental_json_path, translated_json_path, translations
+        ):
+            raise incremental_error(
+                "FINALIZE_TRANSLATION_REPAIR_REQUIRED",
+                "translation issues require one completed repair validation before finalize",
+            )
 
     expected_date_text = run_meta["generated_at"].strftime("%Y-%m-%d")
     date_text = str(raw_payload.get("date", expected_date_text)).strip() or expected_date_text
@@ -1591,15 +1808,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         )
         if err is not None
     ]
-    bloomberg_warnings = bloomberg_summary_translation_warnings(
-        run_fresh_items_raw,
-        translations,
-    )
-    title_warnings = title_translation_warnings(run_fresh_items_raw, translations)
-    for warning in bloomberg_warnings + title_warnings:
-        warning["generated_at"] = generated_at
-    current_run_errors.extend(bloomberg_warnings + title_warnings)
-    daily_errors.extend(bloomberg_warnings + title_warnings)
+    # Translation diagnostics stay in translation-validation.json, not user outputs.
 
     today_seen_urls = list(today_state["today_seen_urls"])
     today_seen_set = set(today_seen_urls)
