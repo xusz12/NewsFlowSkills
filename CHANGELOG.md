@@ -1,0 +1,33 @@
+# Changelog
+
+## v1.1.0（待发布）— runtime-neutral project-scope 架构
+
+- 唯一安装 payload 迁移到 `skills/newsflow/`。
+- 删除 runtime adapters 与全局同步脚本；所有环境使用同一完整 `SKILL.md`。
+- 增加 Codex 可选 `agents/openai.yaml`，主流程不依赖该 metadata。
+- README 改为 Codex、Claude Code、Kimi Code CLI、Pi 的简化项目安装命令。
+- 三个业务脚本与 `references/commands.json` 保持 v1.0.1 byte-identical；业务行为不变。
+
+## v1.0.1 — 翻译修复门禁与静默诊断
+
+- 验证结果写入隐藏运行状态；未完成一次 repair 时禁止带翻译问题 finalize。
+- 翻译诊断不再进入用户 Markdown 与 sidecar errors，采集错误仍正常展示。
+
+## v1.0 — 脚本化翻译批次与 URL 对账
+
+- 新增脚本驱动的 initial/一次 repair 翻译计划：每批最多 8 个 URL，超长 Twitter 单独成批。
+- 新增单批 URL 集合精确对账、字段白名单/必填字段校验，以及通过后才执行的原子累计合并。
+- 保留 CJK `auto` 规则；第二次校验仍失败时继续 finalize。
+
+## 2026-06-03 — Twitter 翻译字段分离
+
+- `title` 保持主推文翻译，`quoted_text` 保持引用推文翻译，不可互换。
+- 长推文完整翻译，不压缩为摘要。
+
+## 2026-05-30 — 移除 Bloomberg Politics/Economics
+
+- 从 `references/commands.json` 移除 Bloomberg Politics 与 Economics 新闻源。
+
+## 2026-05-15 — 增加可选导出
+
+- finalize 后可选运行 `export_outputs.py`，将 daily/per-run 产物写入 DailyNews 月份目录。

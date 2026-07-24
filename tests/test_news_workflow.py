@@ -9,8 +9,9 @@ import unittest
 from pathlib import Path
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = Path(
-    os.environ.get("NEWSFLOW_SKILL_ROOT", Path(__file__).resolve().parents[1])
+    os.environ.get("NEWSFLOW_SKILL_ROOT", REPOSITORY_ROOT / "skills" / "newsflow")
 ).resolve()
 PIPELINE_SCRIPT = SKILL_ROOT / "scripts" / "run_news_pipeline.py"
 INCREMENTAL_SCRIPT = SKILL_ROOT / "scripts" / "run_incremental_news.py"

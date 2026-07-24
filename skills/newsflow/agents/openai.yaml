@@ -1,0 +1,4 @@
+interface:
+  display_name: "Newsflow"
+  short_description: "Aggregate news with freshness tracking"
+  default_prompt: "Use $newsflow to aggregate configured news sources and produce fresh Chinese digests."

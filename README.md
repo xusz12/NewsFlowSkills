@@ -1,117 +1,167 @@
-# newsflow（canonical source）
+# NewsFlowSkills
 
-本目录是 newsflow 的唯一维护源（canonical source）。
+`newsflow` 按配置顺序采集多个新闻源，做全局 URL 去重、日内增量状态管理与模型内中文翻译，最终生成 daily 与 per-run 两类 Markdown；finalize 后可选导出。
 
-## What's Changed
+## 什么是 newsflow
 
-### v1.0.1 — 翻译修复门禁与静默诊断
-- **文件**
-  - *SKILL.md、scripts/run_incremental_news.py、tests/test_news_workflow.py*
-    - 验证结果写入隐藏运行状态；未完成一次 repair 时禁止带翻译问题 finalize。
-    - 翻译诊断不再进入用户 Markdown 与 sidecar errors，采集错误仍正常展示。
+newsflow 是一套面向多新闻源的可恢复增量采集与中文化工作流。它把“采集、规范化、去重、日内增量、验证、落盘”拆成确定性的脚本阶段，并把自然语言翻译留给当前 agent 的模型完成。
 
-### v1.0 — 脚本化翻译批次与 URL 对账
-- **文件**
-  - *SKILL.md、scripts/run_incremental_news.py、tests/test_news_workflow.py*
-    - 新增脚本驱动的初始/一次 repair 翻译计划：每批最多 8 个 URL，超长 Twitter 单独成批。
-    - 新增单批 URL 集合精确对账、字段白名单/必填字段校验，以及通过后才执行的原子累计合并。
-    - 保留现有 CJK `auto` 规则；第二次校验仍失败时继续 finalize，并将可追踪告警写入 Markdown 与 sidecar errors。
+核心能力：
 
-### 2026-06-03 — docs: 明确 Twitter 翻译主推文与引用推文字段分离规则
-- **文件**
-  - *SKILL.md（+4 −0）*
-    - 新增规则：`title`=主推文翻译，`quoted_text`=引用推文翻译，不可互换
-    - 长推文必须完整翻译，禁止压缩为摘要
-  - *adapters/claude.md（+7 −2）*
-    - 新增步骤 5：Twitter 翻译字段分离约束
-  - *adapters/codex.md（+10 −1）*
-    - 新增第 6 节「Codex 翻译执行补充」
-  - *tests/test_news_workflow.py（+54 −0）*
-    - 新增字段分离验证测试
-- **影响**：Twitter 翻译不再出现主推文与引用推文混淆或长推文被压缩
+- 按 `commands.json` 的顺序串行执行多个采集命令；单个来源失败不会阻断后续来源。
+- 统一 Reuters、Bloomberg、TechCrunch、Ars 与 Twitter/X 等来源的数据结构。
+- 按绝对 URL 全局去重，并结合前一日与当日状态只输出本轮新增内容。
+- 通过模型生成中文标题、Twitter 引用翻译与 Bloomberg 摘要翻译，不接入第三方翻译 API。
+- 为每轮运行保留独立工件、翻译验证证据和恢复信息，避免旧工件或并发状态造成静默数据错误。
+- 同时生成每日累计简报与本轮增量简报，并可选导出 Markdown 与 news-reader sidecar。
 
-### 2026-05-30 — refactor: 移除 Bloomberg Politics/Economics 新闻源
-- **文件**
-  - *references/commands.json（+0 −32）*
-    - 移除 `bloomberg_politics` 命令配置
-    - 移除 `bloomberg_economics` 命令配置
-- **影响**：newsflow 不再抓取 Bloomberg Politics/Economics 板块
+## 适用场景与边界
 
-### 2026-05-15 — docs: 补充Claude适配器可选导出步骤与兼容性说明
-- **文件**
-	- *adapters/claude.md（+16 −0）*
-		- 新增 4.3 可选导出（post-finalize），说明 `export_outputs.py` 在 Claude Code 下的调用方式
-		- 补充路径引号包裹规则与导出失败不影响产物的说明
-		- 兼容性章节新增导出脚本行为一致性的备注
-- **影响**：Claude Code 端 finalize 后可执行可选导出到 DailyNews 归档目录
+- 适合定时或手动生成 fresh/daily 新闻产物、避免重复阅读，并保留每日累计视图与来源错误。
+- 采集命令由配置决定；newsflow 不替用户选择账号、栏目或运行频率。
+- 翻译由宿主模型完成，不调用第三方翻译 API。
+- newsflow 负责新闻采集与中文化产物，不负责后续的简报提炼、重点排序或观点总结。
+- 导出到 DailyNews 是 finalize 之后的可选后处理，不是本地产物成功的必要条件。
 
-## 目录角色
+## 输入与产物
 
-- 维护源（唯一）：`/Users/x/.skills/newsflow`
-- Codex 安装目标：`/Users/x/.codex/skills/newsflow`
-- Claude Code 安装目标：`/Users/x/.claude/skills/newsflow`
+每次运行使用三类输入：
 
-原则：平时只改维护源，不直接手改两个安装目标目录。
+- 安装 payload 内的 `references/commands.json`，或用户通过 `--config` 提供的覆盖配置。每个 source command 的输出都会进入同一条规范化 pipeline。
+- 当前目标 workspace；本地产物与隐藏状态都写在这里。
+- 已有 `.news_state/`；prepare 用它识别前一日 URL、当日已见 URL、已完成 runs 与最新 state snapshot。首次运行时可以不存在。
 
-## 安装与同步
+finalize 成功后，workspace 中会出现：
 
-在维护源目录执行：
-
-```bash
-cd /Users/x/.skills/newsflow
-bash tools/sync_install.sh --dry-run
-bash tools/sync_install.sh
+```text
+<workdir>/
+├── dailyFreshNews_YYYY-MM-DD.md
+├── dailyFreshNews_YYYY-MM-DD.newsreader.json
+├── YYYY-MM-DD-HH-mm_freshNews.md
+├── YYYY-MM-DD-HH-mm_freshNews.newsreader.json
+└── .news_state/
+    ├── YYYY-MM-DD.json
+    └── runs/<run-dir>/
+        ├── current.json
+        ├── incremental.json
+        ├── translated.json
+        └── translation-*.json
 ```
 
-说明：
-- `--dry-run` 先预览将要替换的受管目录。
-- 实际同步会替换受管目录：`scripts/`、`references/`、`tests/`，并同步主 `SKILL.md` 与 adapter。
-- Codex 侧会保留专属文件：`agents/openai.yaml`。
+- `dailyFreshNews_YYYY-MM-DD.md` 是当日 rolling 累计文件。
+- `YYYY-MM-DD-HH-mm_freshNews.md` 只包含本轮新增内容。
+- 两个 `.newsreader.json` sidecar 为同批新闻提供结构化字段。
+- `.news_state/`、run artifacts 与翻译验证记录属于隐藏运行状态，不是用户简报。
+- 本地 finalize 与可选 DailyNews export 相互独立；export 复制 Markdown 与 sidecar，不改变本地状态。
 
-## 日常维护流程
+## 工作流概览
 
-1. 在 `/Users/x/.skills/newsflow` 修改通用内容：
-   - `SKILL.md`
-   - `scripts/`
-   - `references/commands.json`
-   - `tests/`
-   - `adapters/`
-   - `tools/`
-2. 执行同步脚本安装到 Codex / Claude。
-3. 在两侧做最小验证（结构、脚本语法、关键测试）。
+1. **读取配置并顺序采集**：读取默认或覆盖 config，按顺序执行 source commands；单个来源失败会被记录，但不会阻断后续来源。所有成功结果先规范化为统一条目。
+2. **全局去重并生成 current**：按绝对 URL 保留首次出现的条目，写入带不可变 run metadata 的 `current.json`。
+3. **Prepare 日内增量**：对比已有 `.news_state`，过滤前一日和当日已见 URL，得到本轮新增条目、待翻译字段、采集错误与 state snapshot，写入 `incremental.json`。
+4. **Initial translation plan、batches 与 exact merge**：脚本生成 initial plan；每批最多 8 个 URL，超长 Twitter 独立成批。模型只翻译计划要求的字段，脚本验证每批 URL 集合与字段后原子合并到 `translated.json`。
+5. **Validate 与一次 repair**：检查翻译覆盖和必需中文字段。若有缺口，只允许生成一次 repair plan、补剩余字段并再 validate 一次；不无限循环。
+6. **Finalize 原子落盘**：确认工件路径、run metadata 与 state snapshot 仍有效，再原子写 daily/per-run Markdown、两个 sidecar 和日状态。
+7. **可选 export**：finalize 成功后，可显式把 Markdown 与 sidecar 复制到 DailyNews 的对应月份目录。
 
-## 导出功能（可选后处理）
+## 恢复与安全语义
 
-newsflow `finalize` 生成本地产物后，可选执行导出脚本：
+- pipeline 必须成功完成后才能执行 prepare，不能在采集仍运行时读取半成品。
+- prepare 对 stale current、重复 run id/timestamp 或不可读工件等可恢复错误，只允许放弃失败 run 目录、重跑 pipeline + prepare 一次；坏路径、坏 metadata 或坏 state 保持硬失败。
+- finalize 若发现 state drift，使用同一 `current.json` 重做 prepare，复用已有翻译并只补新缺口；不强制 finalize，也不自动重跑 pipeline。
+- 每轮 fresh 文件禁止覆盖；旧 run 工件、混用 run 目录或已经 finalized 的 run 会被拒绝。
+- 翻译诊断只保存在隐藏 validation state，不污染用户 Markdown 或 sidecar `errors`；采集来源错误仍会正常呈现。
+- export 失败不会回滚已成功生成的本地 Markdown、sidecar 或日状态。
 
-```bash
-python3 /Users/x/.skills/newsflow/scripts/export_outputs.py \
-  --daily <daily_fresh_path> \
-  --fresh <run_fresh_path>
+## 快速开始
+
+1. 在目标 workspace 按下方[安装](#安装)章节安装对应 runtime 的项目副本。
+2. 在该 workspace 中让 agent 使用 `$newsflow` 运行默认配置，或同时提供自定义 config 路径。
+3. 首次使用或验证新配置时，先在隔离 workspace 运行，确认来源命令、fresh/daily 产物与状态符合预期，再迁移到目标 workspace。
+
+业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。`v1.1.0` 当前仍是本地候选版本，远端发布前不要把主分支安装结果表述为已验证的 v1.1.0。
+
+## 仓库结构
+
+```text
+NewsFlowSkills/
+├── README.md
+├── CHANGELOG.md
+├── tests/
+└── skills/
+    └── newsflow/
+        ├── SKILL.md
+        ├── agents/openai.yaml
+        ├── references/commands.json
+        └── scripts/
 ```
 
-导出规则：
-- 固定根目录：`/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`
-- 根目录必须已存在；不存在则导出失败并返回明确错误。
-- 按月份归档到 `YYYY年M月` 子目录（子目录不存在会自动创建）。
-- daily 与 fresh 文件名日期必须属于同一年月。
-- 同名文件默认覆盖。
+只有 `skills/newsflow/` 是安装 payload。根 README、CHANGELOG、测试与维护缓存不会进入 agent workspace。payload 使用同一份 runtime-neutral `SKILL.md`；`agents/openai.yaml` 仅为 Codex 可选界面 metadata，其他 runtime 可安全忽略。
 
-## Codex 与 Claude newsflow 的区别
+历史记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-两侧共享同一套核心资产，差异仅在适配层与工具专属文件：
+## 安装
 
-- 共同点：
-  - 同步后的 `SKILL.md`、`scripts/`、`references/`、`tests/` 一致。
-  - 业务逻辑一致。
-- Codex 侧：
-  - 使用 `adapters/codex.md`。
-  - 保留 `agents/openai.yaml`（Codex 专属）。
-- Claude Code 侧：
-  - 使用 `adapters/claude.md`。
-  - 不包含 `agents/openai.yaml`。
+在目标 workspace 根目录执行。以下命令使用稳定主分支，并安装到当前项目：
 
-## Git 管理建议
+Codex：
 
-- 推荐只为本维护源目录建 Git 仓库。
-- 不要把 `.codex/skills/newsflow` 与 `.claude/skills/newsflow` 当作独立仓库长期维护，否则会再次漂移。
+```bash
+npx -y skills add xusz12/NewsFlowSkills -a codex -y
+```
+
+Claude Code：
+
+```bash
+npx -y skills add xusz12/NewsFlowSkills -a claude-code -y
+```
+
+Kimi Code CLI：
+
+```bash
+npx -y skills add xusz12/NewsFlowSkills -a kimi-code-cli -y
+```
+
+Pi：
+
+```bash
+npx -y skills add xusz12/NewsFlowSkills -a pi -y
+```
+
+这些简化命令成立的前提是：仓库当前只有一个 skill，且主分支只接收已经 Review 的稳定内容，因此无需额外指定 `-s newsflow`。如果仓库以后出现第二个 skill，默认命令必须恢复 `-s newsflow`。
+
+## 可复现发布与问题复现
+
+只有在复现特定发布或排查 installer 差异时，才同时 pin installer 版本与 tag/commit：
+
+```bash
+npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.1.0 -s newsflow -a codex --copy -y
+```
+
+其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.1.0` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
+
+从当前 workspace 移除：
+
+```bash
+npx -y skills remove newsflow -y
+```
+
+该项目级命令会删除当前 workspace 中 newsflow 的所有 project-local runtime copies 与 lock 记录。不要添加 `-a codex` 或 `--agent codex`：按 agent 移除在共享 `.agents/skills/` 目标上只清 lock、可能遗留物理目录。
+
+## 本地开发验证
+
+在隔离 workspace 根目录运行：
+
+```bash
+npx -y skills add /Users/x/.skills/newsflow -a codex -y
+```
+
+其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。Codex 与 Kimi Code CLI 写入 `.agents/skills/newsflow`，Claude Code 写入 `.claude/skills/newsflow`，Pi 写入 `.pi/skills/newsflow`。本地验证不得修改全局副本、联网采集或写真实 DailyNews。
+
+## 执行边界
+
+- 默认命令配置：安装 payload 内的 `references/commands.json`。
+- 每次运行使用独立 `.news_state/runs/<run-dir>/` 工件目录。
+- 翻译由模型完成，不调用第三方翻译 API。
+- `finalize` 生成本地 daily/per-run Markdown；导出到 DailyNews 是显式可选后处理。
+- 完整 pipeline、恢复、翻译证据、一次 repair、finalize 与 export 契约见安装 payload 的 `SKILL.md`。

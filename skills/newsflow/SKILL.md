@@ -5,13 +5,20 @@ description: Run configurable opencli news commands sequentially, skip failed co
 
 # Newsflow
 
+## Execution Setup
+
+1. Resolve `<SKILL_ROOT>` as the absolute directory containing this loaded `SKILL.md`.
+2. Use the current environment's command or shell execution capability to run bundled scripts with `python3`.
+3. Use the current environment's file-reading and file-writing capabilities for configuration, run artifacts, and model-produced translation JSON.
+4. Substitute the resolved absolute `<SKILL_ROOT>` in every command, quote every path argument, and pass all arguments in the same command invocation. Do not rely on environment variables or shell state surviving between calls.
+5. Do not detect or guess the runtime, load runtime-specific adapters, or assume a global install path or canonical repository path. This skill uses the same workflow in every environment.
+
 ## Workflow
 
 1. Use current working directory as the output directory.
 2. Read command configuration:
-   - Default: `references/commands.json` inside this skill.
+   - Default: `<SKILL_ROOT>/references/commands.json`.
    - Optional override: user-provided config path via `--config`.
-   - Resolve skill root absolute path from this skill file location and call it `<SKILL_ROOT>`.
 3. Define run-scoped working paths. Do not reuse flat temp files like `.news_state/tmp_current.json`; each run must use its own artifact directory under `.news_state/runs/<run-dir>/`:
 
 ```bash
@@ -27,14 +34,14 @@ TRANSLATED_JSON_PATH=<RUN_DIR>/translated.json
 4. Run pipeline script sequentially:
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_news_pipeline.py --config <commands.json> --out-json <CURRENT_JSON_PATH>
+python3 "<SKILL_ROOT>/scripts/run_news_pipeline.py" --config "<commands.json>" --out-json "<CURRENT_JSON_PATH>"
 ```
 
 5. Wait for step 4 to exit successfully before continuing. Never run `prepare` while the pipeline command is still in flight.
 6. Prepare incremental payload:
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_incremental_news.py prepare --current-json <CURRENT_JSON_PATH> --state-dir <STATE_DIR> --out-json <INCREMENTAL_JSON_PATH>
+python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" prepare --current-json "<CURRENT_JSON_PATH>" --state-dir "<STATE_DIR>" --out-json "<INCREMENTAL_JSON_PATH>"
 ```
 
 Prepare recovery policy:
@@ -73,7 +80,7 @@ Non-recoverable prepare codes:
    - Create the initial deterministic plan. The script derives required fields, keeps the existing `auto` rule that any CJK title (including mixed-language) does not need title translation, while still planning an English quote or Bloomberg summary when required.
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --out-json <RUN_DIR>/translation-plan.json --phase initial
+python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" plan-translations --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>" --out-json "<RUN_DIR>/translation-plan.json" --phase initial
 ```
 
    - Translate each `batches[*].items` in `translation-plan.json`; every batch has at most 8 URLs. A Twitter item's `raw_title + quoted_text_raw` of at least 1000 characters is deliberately isolated in its own batch.
@@ -81,7 +88,7 @@ python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --increme
    - Merge each batch only through the script, which checks the exact URL set and required fields before atomically updating the cumulative map:
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_incremental_news.py merge-translation-batch --plan-json <RUN_DIR>/translation-plan.json --batch-id batch-NNN --batch-json <RUN_DIR>/translation-initial-batch-NNN.json --translated-json <TRANSLATED_JSON_PATH>
+python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" merge-translation-batch --plan-json "<RUN_DIR>/translation-plan.json" --batch-id batch-NNN --batch-json "<RUN_DIR>/translation-initial-batch-NNN.json" --translated-json "<TRANSLATED_JSON_PATH>"
 ```
 
    - For every planned item whose `required_fields` includes `title`, translate `title`.
@@ -98,7 +105,7 @@ python3 <SKILL_ROOT>/scripts/run_incremental_news.py merge-translation-batch --p
 9. Validate translated map before finalize:
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_incremental_news.py validate-translations --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH>
+python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" validate-translations --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>"
 ```
 
 Validation workflow:
@@ -106,7 +113,7 @@ Validation workflow:
 - If validate returns `ok=false`, generate the one permitted repair plan; it contains only required fields still missing or non-Chinese, split by the same deterministic rules:
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --out-json <RUN_DIR>/translation-repair-plan.json --phase repair
+python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" plan-translations --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>" --out-json "<RUN_DIR>/translation-repair-plan.json" --phase repair
 ```
 
 - Translate and merge each repair batch with `merge-translation-batch`, using `translation-repair-batch-NNN.json` and `translation-repair-plan.json`. Do not directly edit the cumulative map or create another repair plan.
@@ -133,13 +140,13 @@ python3 <SKILL_ROOT>/scripts/run_incremental_news.py plan-translations --increme
 10. Finalize outputs:
 
 ```bash
-python3 <SKILL_ROOT>/scripts/run_incremental_news.py finalize --incremental-json <INCREMENTAL_JSON_PATH> --translated-json <TRANSLATED_JSON_PATH> --state-dir <STATE_DIR> --out-dir <WORKDIR>
+python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" finalize --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>" --state-dir "<STATE_DIR>" --out-dir "<WORKDIR>"
 ```
 
 Optional export step (post-finalize):
 
 ```bash
-python3 <SKILL_ROOT>/scripts/export_outputs.py --daily <daily_fresh_path> --fresh <run_fresh_path>
+python3 "<SKILL_ROOT>/scripts/export_outputs.py" --daily "<daily_fresh_path>" --fresh "<run_fresh_path>"
 ```
 
 Export rules:
