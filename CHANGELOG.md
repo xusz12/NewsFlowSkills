@@ -1,6 +1,12 @@
 # Changelog
 
-## v1.1.0（待发布）— runtime-neutral project-scope 架构
+## v1.1.1（待发布）— 增加 Twitter/X 来源
+
+- 新增 `aleabitoreddit`、`LinQingV`、`cyrilxuq`、`Areskapitalon`、`ChinaMacroFacts`、`MacroMargin`、`HuXijin_GT` 七个账号。
+- 每个账号沿用现有约定：最新 10 条、`translation_policy: "auto"`、opencli 主路径与 native fallback。
+- pipeline、翻译状态机、finalize 与 export 行为不变。
+
+## v1.1.0（2026-07-25）— runtime-neutral project-scope 架构
 
 - 唯一安装 payload 迁移到 `skills/newsflow/`。
 - 删除 runtime adapters 与全局同步脚本；所有环境使用同一完整 `SKILL.md`。

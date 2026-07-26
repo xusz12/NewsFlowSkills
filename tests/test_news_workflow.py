@@ -222,10 +222,34 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             and entry.get("command", [None, None])[:2] == ["opencli", "twitter"]
         ]
         self.assertTrue(twitter_entries, "expected twitter sources in default commands.json")
+        handles = [entry["command"][3] for entry in twitter_entries]
+        self.assertEqual(len(handles), len(set(handles)), "twitter handles must be unique")
+        self.assertEqual(
+            handles,
+            [
+                "ilyasut",
+                "mingchikuo",
+                "ivanalog_com",
+                "fxtrader",
+                "Time_HorizonX",
+                "jakevin7",
+                "aleabitoreddit",
+                "LinQingV",
+                "cyrilxuq",
+                "Areskapitalon",
+                "ChinaMacroFacts",
+                "MacroMargin",
+                "HuXijin_GT",
+            ],
+        )
         for entry in twitter_entries:
             self.assertEqual(entry["command"][2], "tweets")
+            self.assertEqual(entry["command"][4:6], ["--limit", "10"])
+            self.assertEqual(entry["translation_policy"], "auto")
             self.assertEqual(entry.get("fallback_command", [None])[0], "twitter")
             self.assertEqual(entry["fallback_command"][1], "user-posts")
+            self.assertEqual(entry["fallback_command"][2], entry["command"][3])
+            self.assertEqual(entry["fallback_command"][3:5], ["-n", "10"])
             self.assertNotIn("retry_once", entry, f"twitter source should not add retry_once: {entry}")
 
     def test_normalize_row_supports_opencli_twitter_schema(self) -> None:

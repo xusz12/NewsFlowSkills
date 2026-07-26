@@ -293,5 +293,194 @@
       "--full-text",
       "--json"
     ]
+  },
+  {
+    "section": "aleabitoreddit",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "aleabitoreddit",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "aleabitoreddit",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
+  },
+  {
+    "section": "LinQingV",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "LinQingV",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "LinQingV",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
+  },
+  {
+    "section": "cyrilxuq",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "cyrilxuq",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "cyrilxuq",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
+  },
+  {
+    "section": "Areskapitalon",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "Areskapitalon",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "Areskapitalon",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
+  },
+  {
+    "section": "ChinaMacroFacts",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "ChinaMacroFacts",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "ChinaMacroFacts",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
+  },
+  {
+    "section": "MacroMargin",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "MacroMargin",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "MacroMargin",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
+  },
+  {
+    "section": "HuXijin_GT",
+    "translation_policy": "auto",
+    "command": [
+      "opencli",
+      "twitter",
+      "tweets",
+      "HuXijin_GT",
+      "--limit",
+      "10",
+      "-f",
+      "json",
+      "--window",
+      "background",
+      "--site-session",
+      "persistent"
+    ],
+    "fallback_command": [
+      "twitter",
+      "user-posts",
+      "HuXijin_GT",
+      "-n",
+      "10",
+      "--full-text",
+      "--json"
+    ]
   }
 ]
