@@ -135,6 +135,9 @@
   {
     "section": "Ilya Sutskever",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "ilyasut",
+    "source_name": "Ilya Sutskever",
     "command": [
       "opencli",
       "twitter",
@@ -162,6 +165,9 @@
   {
     "section": "郭明錤",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "mingchikuo",
+    "source_name": "郭明錤",
     "command": [
       "opencli",
       "twitter",
@@ -189,6 +195,9 @@
   {
     "section": "seekinganythingbutalpha",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "ivanalog_com",
+    "source_name": "seekinganythingbutalpha",
     "command": [
       "opencli",
       "twitter",
@@ -216,6 +225,9 @@
   {
     "section": "外汇交易员",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "fxtrader",
+    "source_name": "外汇交易员",
     "command": [
       "opencli",
       "twitter",
@@ -243,6 +255,9 @@
   {
     "section": "Time Horizon",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "Time_HorizonX",
+    "source_name": "Time Horizon",
     "command": [
       "opencli",
       "twitter",
@@ -270,6 +285,9 @@
   {
     "section": "卡比卡比",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "jakevin7",
+    "source_name": "卡比卡比",
     "command": [
       "opencli",
       "twitter",
@@ -297,6 +315,9 @@
   {
     "section": "aleabitoreddit",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "aleabitoreddit",
+    "source_name": "Serenity",
     "command": [
       "opencli",
       "twitter",
@@ -324,6 +345,9 @@
   {
     "section": "LinQingV",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "LinQingV",
+    "source_name": "Macro_Lin",
     "command": [
       "opencli",
       "twitter",
@@ -351,6 +375,9 @@
   {
     "section": "cyrilxuq",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "cyrilxuq",
+    "source_name": "徐冲浪",
     "command": [
       "opencli",
       "twitter",
@@ -378,6 +405,9 @@
   {
     "section": "Areskapitalon",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "Areskapitalon",
+    "source_name": "Aelia Capitolina",
     "command": [
       "opencli",
       "twitter",
@@ -405,6 +435,9 @@
   {
     "section": "ChinaMacroFacts",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "ChinaMacroFacts",
+    "source_name": "中国政经事实ChinaFacts",
     "command": [
       "opencli",
       "twitter",
@@ -432,6 +465,9 @@
   {
     "section": "MacroMargin",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "MacroMargin",
+    "source_name": "宏观边际MacroMargin",
     "command": [
       "opencli",
       "twitter",
@@ -459,6 +495,9 @@
   {
     "section": "HuXijin_GT",
     "translation_policy": "auto",
+    "source_type": "twitter",
+    "source_handle": "HuXijin_GT",
+    "source_name": "Hu Xijin 胡锡进",
     "command": [
       "opencli",
       "twitter",

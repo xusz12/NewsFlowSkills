@@ -242,10 +242,29 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "HuXijin_GT",
             ],
         )
+        expected_names = {
+            "ilyasut": "Ilya Sutskever",
+            "mingchikuo": "郭明錤",
+            "ivanalog_com": "seekinganythingbutalpha",
+            "fxtrader": "外汇交易员",
+            "Time_HorizonX": "Time Horizon",
+            "jakevin7": "卡比卡比",
+            "aleabitoreddit": "Serenity",
+            "LinQingV": "Macro_Lin",
+            "cyrilxuq": "徐冲浪",
+            "Areskapitalon": "Aelia Capitolina",
+            "ChinaMacroFacts": "中国政经事实ChinaFacts",
+            "MacroMargin": "宏观边际MacroMargin",
+            "HuXijin_GT": "Hu Xijin 胡锡进",
+        }
         for entry in twitter_entries:
+            handle = entry["command"][3]
             self.assertEqual(entry["command"][2], "tweets")
             self.assertEqual(entry["command"][4:6], ["--limit", "10"])
             self.assertEqual(entry["translation_policy"], "auto")
+            self.assertEqual(entry["source_type"], "twitter")
+            self.assertEqual(entry["source_handle"], handle)
+            self.assertEqual(entry["source_name"], expected_names[handle])
             self.assertEqual(entry.get("fallback_command", [None])[0], "twitter")
             self.assertEqual(entry["fallback_command"][1], "user-posts")
             self.assertEqual(entry["fallback_command"][2], entry["command"][3])
@@ -271,6 +290,9 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             row,
             translation_policy="auto",
             output_timezone="Asia/Shanghai",
+            source_type="twitter",
+            source_handle="mingchikuo",
+            source_name="郭明錤",
         )
 
         self.assertIsNotNone(item)
@@ -279,6 +301,9 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(item["quoted_text_raw"], "Quoted tweet body")
         self.assertEqual(item["author_name"], "郭明錤｜Ming-Chi Kuo")
         self.assertEqual(item["author_screen_name"], "mingchikuo")
+        self.assertEqual(item["source_type"], "twitter")
+        self.assertEqual(item["source_handle"], "mingchikuo")
+        self.assertEqual(item["source_name"], "郭明錤")
         self.assertEqual(item["url"], "https://x.com/mingchikuo/status/2061869602154717517?s=20")
         self.assertEqual(item["time"], "2026-06-03 01:56")
 
@@ -302,6 +327,9 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             row,
             translation_policy="auto",
             output_timezone="Asia/Shanghai",
+            source_type="twitter",
+            source_handle="ilyasut",
+            source_name="Ilya Sutskever",
         )
 
         self.assertIsNotNone(item)
@@ -309,6 +337,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(item["quoted_text_raw"], "Native quoted tweet")
         self.assertEqual(item["url"], "https://x.com/ilyasut/status/42?s=20")
         self.assertEqual(item["time"], "2026-06-27 09:30")
+        self.assertEqual(item["source_handle"], "ilyasut")
 
     def test_default_commands_define_translation_policy(self) -> None:
         config_path = SKILL_ROOT / "references" / "commands.json"
@@ -318,6 +347,114 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             assert isinstance(entry, dict)
             self.assertIn("translation_policy", entry)
             self.assertIn(entry["translation_policy"], {"always", "auto", "never"})
+
+    def test_twitter_config_requires_explicit_collector_identity(self) -> None:
+        module = load_pipeline_module()
+        config_path = self.root / "commands.json"
+        write_json(
+            config_path,
+            [
+                {
+                    "section": "missing-metadata",
+                    "translation_policy": "auto",
+                    "source_type": "twitter",
+                    "command": ["opencli", "twitter", "tweets", "example"],
+                }
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "source_type=twitter requires source_handle and source_name",
+        ):
+            module.load_config(config_path)
+
+        write_json(
+            config_path,
+            [
+                {
+                    "section": "implicit-twitter",
+                    "translation_policy": "auto",
+                    "command": ["opencli", "twitter", "tweets", "example"],
+                }
+            ],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "Twitter command requires source_type=twitter",
+        ):
+            module.load_config(config_path)
+
+    def test_all_configured_twitter_sources_infer_from_item_metadata(self) -> None:
+        module = load_incremental_module()
+        self.assertFalse(hasattr(module, "TWITTER_SECTIONS"))
+        entries = read_json(SKILL_ROOT / "references" / "commands.json")
+        twitter_entries = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("source_type") == "twitter"
+        ]
+
+        self.assertEqual(len(twitter_entries), 13)
+        for index, entry in enumerate(twitter_entries, start=1):
+            item = {
+                "section": entry["section"],
+                "url": f"https://x.com/external_author/status/{index}?s=20",
+                "source_type": entry["source_type"],
+                "source_handle": entry["source_handle"],
+                "source_name": entry["source_name"],
+            }
+            with self.subTest(handle=entry["source_handle"]):
+                self.assertEqual(
+                    module.infer_source_metadata(item),
+                    ("twitter", entry["source_name"]),
+                )
+
+    def test_pipeline_propagates_configured_collector_identity(self) -> None:
+        run_dir = self.make_run_dir("collector-identity")
+        current_json = run_dir / "current.json"
+        config_path = self.root / "commands.json"
+        write_json(
+            config_path,
+            [
+                {
+                    "section": "卡比卡比",
+                    "translation_policy": "auto",
+                    "source_type": "twitter",
+                    "source_handle": "jakevin7",
+                    "source_name": "卡比卡比",
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json; "
+                            "print(json.dumps([{'id':'101','author':'external_author',"
+                            "'name':'External Author','text':'Reposted body',"
+                            "'created_at':'Tue Jun 02 17:56:35 +0000 2026'}]))"
+                        ),
+                    ],
+                }
+            ],
+        )
+
+        result = self.run_cmd(
+            str(PIPELINE_SCRIPT),
+            "--config",
+            str(config_path),
+            "--out-json",
+            str(current_json),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = read_json(current_json)["deduped_items"][0]
+        self.assertEqual(item["source_type"], "twitter")
+        self.assertEqual(item["source_handle"], "jakevin7")
+        self.assertEqual(item["source_name"], "卡比卡比")
+        self.assertEqual(item["author_screen_name"], "external_author")
+        self.assertEqual(
+            item["url"],
+            "https://x.com/external_author/status/101?s=20",
+        )
 
     def test_pipeline_propagates_translation_policy_into_items(self) -> None:
         run_dir = self.make_run_dir("policy-propagation")
@@ -870,6 +1007,81 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_finalize_sidecar_separates_collector_from_four_content_authors(self) -> None:
+        run_dir = self.make_run_dir("twitter-collector-contract")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        cases = [
+            ("original", "jakevin7", "卡比卡比"),
+            ("repost", "istdrc", "转发内容作者"),
+            ("reply", "wey_gu", "回复内容作者"),
+            ("quote", "aiandcloud", "引用内容作者"),
+        ]
+        twitter_items = []
+        for index, (kind, author_handle, author_name) in enumerate(cases, start=1):
+            item = {
+                "section": "卡比卡比",
+                "title": f"{kind} 中文内容",
+                "raw_title": f"{kind} 中文内容",
+                "time": f"2026-04-09 12:0{index}:00",
+                "url": f"https://x.com/{author_handle}/status/{index}?s=20",
+                "translation_policy": "auto",
+                "source_type": "twitter",
+                "source_handle": "jakevin7",
+                "source_name": "卡比卡比",
+                "author_name": author_name,
+                "author_screen_name": author_handle,
+            }
+            if kind == "quote":
+                item["quoted_text_raw"] = "被引用内容"
+            twitter_items.append(item)
+
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="twitter-collector-contract",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=twitter_items,
+        )
+        payload["section_order"] = ["卡比卡比"]
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        write_json(incremental_json, payload)
+        write_json(translated_json, {})
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+            "--state-dir",
+            str(self.state_dir),
+            "--out-dir",
+            str(self.out_dir),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sidecar = read_json(
+            self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json"
+        )
+        self.assertEqual(len(sidecar["items"]), 4)
+        for index, (sidecar_item, (kind, author_handle, author_name)) in enumerate(
+            zip(sidecar["items"], cases, strict=True),
+            start=1,
+        ):
+            with self.subTest(kind=kind):
+                self.assertEqual(sidecar_item["source_type"], "twitter")
+                self.assertEqual(sidecar_item["source_handle"], "jakevin7")
+                self.assertEqual(sidecar_item["source_name"], "卡比卡比")
+                self.assertEqual(sidecar_item["source"], "卡比卡比")
+                self.assertEqual(sidecar_item["author_screen_name"], author_handle)
+                self.assertEqual(sidecar_item["author_name"], author_name)
+                self.assertEqual(
+                    sidecar_item["canonical_url"],
+                    f"https://x.com/{author_handle}/status/{index}",
+                )
 
     def test_finalize_rejects_state_drift_since_prepare(self) -> None:
         run_dir = self.make_run_dir("drift-run")

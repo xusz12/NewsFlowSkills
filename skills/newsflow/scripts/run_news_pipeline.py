@@ -202,6 +202,9 @@ def normalize_row(
     *,
     translation_policy: str,
     output_timezone: str,
+    source_type: str = "",
+    source_handle: str = "",
+    source_name: str = "",
 ) -> dict[str, str] | None:
     title = str(row.get("title", "")).strip()
     url = str(row.get("url") or row.get("link") or "").strip()
@@ -233,6 +236,12 @@ def normalize_row(
         }
         if summary:
             item["summary"] = summary
+        if source_type:
+            item["source_type"] = source_type
+        if source_handle:
+            item["source_handle"] = source_handle
+        if source_name:
+            item["source_name"] = source_name
         return item
 
     tweet_id = str(row.get("id", "")).strip()
@@ -263,7 +272,7 @@ def normalize_row(
     if isinstance(quoted, dict):
         quote_text = compact_text(quoted.get("text", ""))
 
-    return {
+    item = {
         "section": section,
         "title": tweet_text,
         "time": normalize_twitter_local_time(
@@ -276,6 +285,13 @@ def normalize_row(
         "author_screen_name": screen_name,
         "quoted_text_raw": quote_text,
     }
+    if source_type:
+        item["source_type"] = source_type
+    if source_handle:
+        item["source_handle"] = source_handle
+    if source_name:
+        item["source_name"] = source_name
+    return item
 
 
 def parse_positive_int(raw: Any, default: int) -> int:
@@ -297,6 +313,9 @@ def execute_command_once(
     treat_empty_as_failure: bool,
     translation_policy: str,
     output_timezone: str,
+    source_type: str,
+    source_handle: str,
+    source_name: str,
 ) -> dict[str, Any]:
     command_str = " ".join(shlex.quote(part) for part in command)
 
@@ -352,6 +371,9 @@ def execute_command_once(
             row,
             translation_policy=translation_policy,
             output_timezone=output_timezone,
+            source_type=source_type,
+            source_handle=source_handle,
+            source_name=source_name,
         )
         if normalized is None:
             continue
@@ -460,6 +482,35 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"config item #{i} has invalid translation_policy: {translation_policy}"
             )
+        source_type = str(item.get("source_type", "")).strip().lower()
+        source_handle = str(item.get("source_handle", "")).strip().lstrip("@")
+        source_name = str(item.get("source_name", "")).strip()
+        command_is_twitter = command[:3] == ["opencli", "twitter", "tweets"]
+        fallback_is_twitter = (
+            fallback_command is not None
+            and fallback_command[:2] == ["twitter", "user-posts"]
+        )
+        if (command_is_twitter or fallback_is_twitter) and source_type != "twitter":
+            raise ValueError(
+                f"config item #{i} Twitter command requires source_type=twitter"
+            )
+        if source_type == "twitter" and (not source_handle or not source_name):
+            raise ValueError(
+                f"config item #{i} with source_type=twitter requires source_handle and source_name"
+            )
+        if command_is_twitter and len(command) > 3 and command[3] != source_handle:
+            raise ValueError(
+                f"config item #{i} source_handle must match Twitter command handle"
+            )
+        if (
+            fallback_is_twitter
+            and fallback_command is not None
+            and len(fallback_command) > 2
+            and fallback_command[2] != source_handle
+        ):
+            raise ValueError(
+                f"config item #{i} source_handle must match Twitter fallback handle"
+            )
 
         parsed.append(
             {
@@ -470,6 +521,9 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
                 "treat_empty_as_failure": treat_empty_as_failure,
                 "min_valid_items": min_valid_items,
                 "translation_policy": translation_policy,
+                "source_type": source_type,
+                "source_handle": source_handle,
+                "source_name": source_name,
             }
         )
 
@@ -497,6 +551,9 @@ def run_pipeline(
         treat_empty_as_failure = bool(entry.get("treat_empty_as_failure", False))
         min_valid_items = parse_positive_int(entry.get("min_valid_items", 1), default=1)
         translation_policy = str(entry.get("translation_policy", "auto")).strip().lower() or "auto"
+        source_type = str(entry.get("source_type", "")).strip().lower()
+        source_handle = str(entry.get("source_handle", "")).strip().lstrip("@")
+        source_name = str(entry.get("source_name", "")).strip()
 
         if section not in section_order:
             section_order.append(section)
@@ -511,6 +568,9 @@ def run_pipeline(
             treat_empty_as_failure=treat_empty_as_failure,
             translation_policy=translation_policy,
             output_timezone=output_timezone,
+            source_type=source_type,
+            source_handle=source_handle,
+            source_name=source_name,
         )
         primary_attempts.append(first)
 
@@ -523,6 +583,9 @@ def run_pipeline(
                 treat_empty_as_failure=treat_empty_as_failure,
                 translation_policy=translation_policy,
                 output_timezone=output_timezone,
+                source_type=source_type,
+                source_handle=source_handle,
+                source_name=source_name,
             )
             primary_attempts.append(second)
 
@@ -539,6 +602,9 @@ def run_pipeline(
                 treat_empty_as_failure=treat_empty_as_failure,
                 translation_policy=translation_policy,
                 output_timezone=output_timezone,
+                source_type=source_type,
+                source_handle=source_handle,
+                source_name=source_name,
             )
             if fallback_attempt["ok"]:
                 success_attempt = fallback_attempt

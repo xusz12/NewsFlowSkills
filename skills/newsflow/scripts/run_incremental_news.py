@@ -16,14 +16,6 @@ from zoneinfo import ZoneInfo
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 RUNS_DIRNAME = "runs"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
-TWITTER_SECTIONS = {
-    "Ilya Sutskever",
-    "郭明錤",
-    "seekinganythingbutalpha",
-    "外汇交易员",
-    "Time Horizon",
-    "卡比卡比",
-}
 PORTAL_SECTIONS = {
     "middle-east",
     "china",
@@ -219,6 +211,9 @@ def normalize_item(item: Any) -> dict[str, str] | None:
     quoted_text = str(item.get("quoted_text", quoted_text_raw)).strip()
     author_name = str(item.get("author_name", "")).strip()
     author_screen_name = str(item.get("author_screen_name", "")).strip()
+    source_type = str(item.get("source_type", "")).strip().lower()
+    source_handle = str(item.get("source_handle", "")).strip().lstrip("@")
+    source_name = str(item.get("source_name", "")).strip()
     summary = str(item.get("summary", "")).strip()
 
     payload = {
@@ -237,6 +232,12 @@ def normalize_item(item: Any) -> dict[str, str] | None:
         payload["author_name"] = author_name
     if author_screen_name:
         payload["author_screen_name"] = author_screen_name
+    if source_type:
+        payload["source_type"] = source_type
+    if source_handle:
+        payload["source_handle"] = source_handle
+    if source_name:
+        payload["source_name"] = source_name
     if summary:
         payload["summary"] = summary
     return payload
@@ -385,17 +386,13 @@ def section_order_from_items(items: list[dict[str, str]]) -> list[str]:
 
 def sort_sections(section_order: list[str]) -> list[str]:
     portal_sections: list[str] = []
-    twitter_sections: list[str] = []
     other_sections: list[str] = []
     for section in section_order:
         if section in PORTAL_SECTIONS:
             portal_sections.append(section)
             continue
-        if section in TWITTER_SECTIONS:
-            twitter_sections.append(section)
-            continue
         other_sections.append(section)
-    return portal_sections + twitter_sections + other_sections
+    return portal_sections + other_sections
 
 
 def parse_sortable_time(text: str) -> datetime | None:
@@ -673,7 +670,7 @@ def required_translation_fields(
 
 
 def is_long_twitter_translation(item: dict[str, str]) -> bool:
-    if item.get("section") not in TWITTER_SECTIONS:
+    if not is_twitter_item(item):
         return False
     return len(item.get("raw_title", "")) + len(item.get("quoted_text_raw", "")) >= LONG_TWITTER_TRANSLATION_CHARS
 
@@ -1292,14 +1289,35 @@ def finalize_item(item: dict[str, str], translations: dict[str, dict[str, str]])
         result["author_name"] = str(item.get("author_name", "")).strip()
     if item.get("author_screen_name"):
         result["author_screen_name"] = str(item.get("author_screen_name", "")).strip()
+    if item.get("source_type"):
+        result["source_type"] = str(item.get("source_type", "")).strip().lower()
+    if item.get("source_handle"):
+        result["source_handle"] = str(item.get("source_handle", "")).strip().lstrip("@")
+    if item.get("source_name"):
+        result["source_name"] = str(item.get("source_name", "")).strip()
     if summary:
         result["summary"] = summary
     return result
 
 
-def infer_source_metadata(section: str) -> tuple[str, str]:
-    if section in TWITTER_SECTIONS:
-        return "twitter", "X"
+def is_twitter_item(item: dict[str, str]) -> bool:
+    if str(item.get("source_type", "")).strip().lower() == "twitter":
+        return True
+    parts = urlsplit(str(item.get("url", "")).strip())
+    hostname = (parts.hostname or "").lower()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    return hostname in {"x.com", "twitter.com"}
+
+
+def infer_source_metadata(item: dict[str, str]) -> tuple[str, str]:
+    explicit_type = str(item.get("source_type", "")).strip().lower()
+    explicit_name = str(item.get("source_name", "")).strip()
+    if explicit_type:
+        return explicit_type, explicit_name or item["section"]
+    section = item["section"]
+    if is_twitter_item(item):
+        return "twitter", explicit_name or "X"
     if section in BLOOMBERG_SECTIONS:
         return "bloomberg", "Bloomberg"
     if section == "techcrunch":
@@ -1349,7 +1367,7 @@ def build_newsreader_sidecar(
         if final_item is None:
             continue
         translated = translations.get(raw_item["url"], {})
-        source_type, source_name = infer_source_metadata(raw_item["section"])
+        source_type, source_name = infer_source_metadata(raw_item)
         raw_summary = str(raw_item.get("summary", "")).strip()
         quoted_text_raw = str(
             raw_item.get("quoted_text_raw", raw_item.get("quoted_text", ""))
@@ -1389,6 +1407,10 @@ def build_newsreader_sidecar(
             sidecar_entry["author_screen_name"] = str(
                 raw_item.get("author_screen_name", "")
             ).strip()
+        if raw_item.get("source_handle"):
+            sidecar_entry["source_handle"] = str(
+                raw_item.get("source_handle", "")
+            ).strip().lstrip("@")
         if source_type == "bloomberg":
             sidecar_entry["summary_zh"] = (
                 str(translated.get("summary_zh", "")).strip()

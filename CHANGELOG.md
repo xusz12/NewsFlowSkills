@@ -1,6 +1,12 @@
 # Changelog
 
-## v1.1.1（待发布）— 增加 Twitter/X 来源
+## v1.1.2（待发布）— 分离 X 采集入口与内容作者
+
+- 每个 Twitter command 显式声明 `source_type`、`source_handle` 与 `source_name`，并将采集账号身份贯穿到 normalized item 和 newsreader sidecar。
+- 条目 URL、`author_name` 与 `author_screen_name` 继续表示实际内容作者；原创、转发、回复和引用不会覆盖采集入口身份。
+- 删除脚本内旧 6 账号 `TWITTER_SECTIONS` 硬编码；以后新增账号只需修改 `commands.json`。
+
+## v1.1.1（2026-07-26）— 增加 Twitter/X 来源
 
 - 新增 `aleabitoreddit`、`LinQingV`、`cyrilxuq`、`Areskapitalon`、`ChinaMacroFacts`、`MacroMargin`、`HuXijin_GT` 七个账号。
 - 每个账号沿用现有约定：最新 10 条、`translation_policy: "auto"`、opencli 主路径与 native fallback。

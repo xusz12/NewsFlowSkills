@@ -286,6 +286,9 @@ Constraints:
 - Daily filtering removes yesterday's URLs.
 - Per-run filtering removes yesterday's URLs and URLs seen earlier the same day.
 - Twitter (`twitter user-posts --json`) is supported:
+  - Every Twitter command in `references/commands.json` must declare `source_type: "twitter"`, `source_handle`, and `source_name`; these fields identify the configured collection account and flow into every normalized item and sidecar entry.
+  - Keep collection identity separate from content authorship: `source_handle` / `source_name` identify whose timeline was collected, while `author_screen_name` / `author_name` and the item URL identify the actual content author for originals, reposts, replies, and quotes.
+  - Add or remove Twitter accounts only through `commands.json`; do not maintain a section-name allowlist in scripts.
   - `text` -> output title.
   - `author.name` can be used as `section` via commands config.
   - URL auto-generated as `https://x.com/{screenName}/status/{id}?s=20`.
