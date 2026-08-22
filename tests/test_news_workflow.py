@@ -97,9 +97,6 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
     def run_markdown_path(self, run_id: str) -> Path:
         return self.out_dir / f"{self.expected_run_stem(run_id)}_freshNews.md"
 
-    def run_sidecar_path(self, run_id: str) -> Path:
-        return self.out_dir / f"{self.expected_run_stem(run_id)}_freshNews.newsreader.json"
-
     def make_current_payload(
         self,
         *,
@@ -222,6 +219,81 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             Path(payload["current_json_path"]).resolve(),
             current_json.resolve(),
         )
+
+    def test_isolated_shortest_complete_workflow(self) -> None:
+        run_dir = self.make_run_dir("shortest-chain")
+        current_json = run_dir / "current.json"
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        plan_json = run_dir / "translation-plan.json"
+        batch_json = run_dir / "translation-initial-batch-001.json"
+        config_path = self.root / "commands.json"
+        url = "https://example.com/shortest-chain"
+        write_json(
+            config_path,
+            [{
+                "section": "custom",
+                "display_name": "Custom Source",
+                "source_type": "site",
+                "source_name": "Custom",
+                "translation_policy": "always",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json; print(json.dumps(["
+                        f"{{'title':'English title','url':'{url}',"
+                        "'time':'2026-04-09 12:00:00'}]))"
+                    ),
+                ],
+            }],
+        )
+        pipeline = self.run_cmd(
+            str(PIPELINE_SCRIPT), "--config", str(config_path),
+            "--out-json", str(current_json),
+        )
+        self.assertEqual(pipeline.returncode, 0, pipeline.stderr)
+        prepare = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "prepare", "--current-json", str(current_json),
+            "--state-dir", str(self.state_dir), "--out-json", str(incremental_json),
+        )
+        self.assertEqual(prepare.returncode, 0, prepare.stderr)
+        self.assertEqual(
+            read_json(incremental_json)["section_metadata"]["custom"]["display_name"],
+            "Custom Source",
+        )
+        plan = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations",
+            "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+            "--out-json", str(plan_json), "--phase", "initial",
+        )
+        self.assertEqual(plan.returncode, 0, plan.stderr)
+        self.assertEqual(len(read_json(plan_json)["batches"]), 1)
+        write_json(batch_json, {url: {"title": "中文标题"}})
+        merge = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "merge-translation-batch",
+            "--plan-json", str(plan_json), "--batch-id", "batch-001",
+            "--batch-json", str(batch_json), "--translated-json", str(translated_json),
+        )
+        self.assertEqual(merge.returncode, 0, merge.stderr)
+        validate = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "validate-translations",
+            "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+        )
+        self.assertEqual(validate.returncode, 0, validate.stderr)
+        self.assertTrue(json.loads(validate.stdout)["ok"])
+        finalize = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "finalize",
+            "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+            "--state-dir", str(self.state_dir), "--out-dir", str(self.out_dir),
+        )
+        self.assertEqual(finalize.returncode, 0, finalize.stderr)
+        markdown = Path(json.loads(finalize.stdout)["run_fresh_path"]).read_text(encoding="utf-8")
+        self.assertIn("## Custom Source（1条）", markdown)
+        self.assertIn("### [中文标题]", markdown)
 
     def test_default_commands_use_opencli_twitter_with_native_fallback(self) -> None:
         config_path = SKILL_ROOT / "references" / "commands.json"
@@ -360,6 +432,88 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             assert isinstance(entry, dict)
             self.assertIn("translation_policy", entry)
             self.assertIn(entry["translation_policy"], {"always", "auto", "never"})
+            self.assertIn(entry.get("source_type"), {"reuters", "bloomberg", "site", "twitter"})
+            self.assertTrue(str(entry.get("source_name", "")).strip())
+            self.assertTrue(str(entry.get("display_name", "")).strip())
+
+        module = load_pipeline_module()
+        parsed = module.load_config(config_path)
+        self.assertEqual(len(parsed), len(entries))
+        self.assertTrue(all(entry["display_name"] for entry in parsed))
+
+    def test_pipeline_snapshots_normalized_section_metadata(self) -> None:
+        module = load_pipeline_module()
+        entries = [
+            {
+                "section": "custom",
+                "command": ["fake"],
+                "fallback_command": None,
+                "retry_once": False,
+                "treat_empty_as_failure": False,
+                "min_valid_items": 1,
+                "translation_policy": "always",
+                "source_type": "site",
+                "source_handle": "",
+                "source_name": "Custom Source",
+                "display_name": "Custom Display",
+            }
+        ]
+        original = module.execute_command_once
+        module.execute_command_once = lambda **kwargs: {
+            "ok": True,
+            "command": ["fake"],
+            "command_str": "fake",
+            "error": "",
+            "failed_reason": "",
+            "items": [],
+            "raw_count": 0,
+            "valid_count": 0,
+        }
+        try:
+            result = module.run_pipeline(entries, timeout_seconds=1, output_timezone=TIMEZONE)
+        finally:
+            module.execute_command_once = original
+        self.assertEqual(
+            result["section_metadata"]["custom"],
+            {
+                "display_name": "Custom Display",
+                "source_type": "site",
+                "source_name": "Custom Source",
+                "source_handle": "",
+                "translation_policy": "always",
+            },
+        )
+
+    def test_unicode_han_timezone_and_markdown_boundaries(self) -> None:
+        incremental = load_incremental_module()
+        pipeline = load_pipeline_module()
+        self.assertTrue(incremental.contains_han("𠮷"))
+        self.assertTrue(incremental.contains_han("日本語"))
+        self.assertFalse(incremental.contains_han("かなだけ"))
+        self.assertEqual(
+            pipeline.normalize_twitter_local_time(
+                "2026-06-02T17:56:35+00:00", output_timezone=TIMEZONE
+            ),
+            "2026-06-03 01:56",
+        )
+        self.assertEqual(
+            pipeline.normalize_twitter_local_time(
+                "2026-06-03 01:56", output_timezone=TIMEZONE
+            ),
+            "2026-06-03 01:56",
+        )
+        markdown = incremental.build_markdown(
+            ["custom"],
+            [{
+                "section": "custom",
+                "title": "A [title] \\",
+                "time": "2026-06-03 01:56",
+                "url": "https://example.com/a path/(x)",
+            }],
+            [],
+            {"custom": {"display_name": "Custom"}},
+        )
+        self.assertIn(r"[A \[title\] \\](https://example.com/a%20path/%28x%29)", markdown)
 
     def test_twitter_config_requires_explicit_collector_identity(self) -> None:
         module = load_pipeline_module()
@@ -873,7 +1027,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             daily_path.resolve(),
         )
 
-    def test_finalize_writes_newsreader_sidecars_with_structured_fields(self) -> None:
+    def test_finalize_writes_only_daily_newsreader_sidecar_with_structured_fields(self) -> None:
         run_dir = self.make_run_dir("newsreader-sidecar")
         incremental_json = run_dir / "incremental.json"
         translated_json = run_dir / "translated.json"
@@ -884,6 +1038,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "time": "2026-04-09 12:00:00",
             "url": "https://example.com/reuters-story",
             "translation_policy": "always",
+            "source_type": "reuters",
+            "source_name": "Reuters",
         }
         bloomberg_item = {
             "section": "bloomberg_main",
@@ -954,18 +1110,11 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         payload_out = json.loads(result.stdout)
-        run_sidecar = read_json(self.run_sidecar_path("newsreader-sidecar"))
         daily_sidecar = read_json(self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json")
         state_payload = read_json(self.today_state_path)
 
-        assert isinstance(run_sidecar, dict)
         assert isinstance(daily_sidecar, dict)
-        self.assertEqual(run_sidecar["schema_version"], "newsreader.daily.v1")
         self.assertEqual(daily_sidecar["schema_version"], "newsreader.daily.v1")
-        self.assertEqual(
-            Path(run_sidecar["source_markdown"]).resolve(),
-            self.run_markdown_path("newsreader-sidecar").resolve(),
-        )
         self.assertEqual(
             Path(daily_sidecar["source_markdown"]).resolve(),
             (self.out_dir / "dailyFreshNews_2026-04-09.md").resolve(),
@@ -974,12 +1123,15 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             Path(payload_out["daily_sidecar_path"]).resolve(),
             (self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json").resolve(),
         )
-        self.assertEqual(
-            Path(state_payload["runs"][0]["run_sidecar_path"]).resolve(),
-            self.run_sidecar_path("newsreader-sidecar").resolve(),
+        self.assertNotIn("run_sidecar_path", payload_out)
+        self.assertNotIn("run_sidecar_path", state_payload["runs"][0])
+        self.assertFalse(
+            self.run_markdown_path("newsreader-sidecar")
+            .with_suffix(".newsreader.json")
+            .exists()
         )
 
-        items = run_sidecar["items"]
+        items = daily_sidecar["items"]
         self.assertEqual([item["item_order"] for item in items], [1, 2, 3])
 
         reuters_sidecar = items[0]
@@ -1023,6 +1175,27 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_legacy_run_sidecar_and_state_field_are_readable_but_untouched(self) -> None:
+        module = load_incremental_module()
+        legacy_sidecar = self.out_dir / "legacy_freshNews.newsreader.json"
+        write_json(legacy_sidecar, {"schema_version": "legacy", "sentinel": True})
+        legacy_state_path = self.state_dir / "legacy-state.json"
+        write_json(
+            legacy_state_path,
+            make_state_payload(
+                runs=[{
+                    "run_id": "legacy-run",
+                    "generated_at": "2026-04-09 11:00:00",
+                    "run_sidecar_path": str(legacy_sidecar),
+                }]
+            ),
+        )
+
+        loaded = module.load_state(legacy_state_path, "2026-04-09", TIMEZONE)
+
+        self.assertEqual(loaded["runs"][0]["run_sidecar_path"], str(legacy_sidecar))
+        self.assertEqual(read_json(legacy_sidecar), {"schema_version": "legacy", "sentinel": True})
 
     def test_finalize_sidecar_separates_collector_from_four_content_authors(self) -> None:
         run_dir = self.make_run_dir("twitter-collector-contract")
@@ -1079,9 +1252,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        sidecar = read_json(
-            self.run_sidecar_path("twitter-collector-contract")
-        )
+        sidecar = read_json(self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json")
         self.assertEqual(len(sidecar["items"]), 4)
         for index, (sidecar_item, (kind, author_handle, author_name)) in enumerate(
             zip(sidecar["items"], cases, strict=True),
@@ -1682,7 +1853,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             module.check_root_exists(self.root / "not-exists")
 
-    def test_export_copies_markdown_and_sidecars(self) -> None:
+    def test_export_copies_markdown_and_daily_sidecar_only(self) -> None:
         source_dir = self.root / "out"
         target_root = self.root / "DailyNews"
         month_dir = target_root / "2026年4月"
@@ -1691,11 +1862,11 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         daily_path = source_dir / "dailyFreshNews_2026-04-09.md"
         fresh_path = source_dir / "2026-04-09-12-05_freshNews.md"
         daily_sidecar = source_dir / "dailyFreshNews_2026-04-09.newsreader.json"
-        fresh_sidecar = source_dir / "2026-04-09-12-05_freshNews.newsreader.json"
+        stale_fresh_sidecar = source_dir / "2026-04-09-12-05_freshNews.newsreader.json"
         write_text(daily_path, "# daily\n")
         write_text(fresh_path, "# fresh\n")
         write_json(daily_sidecar, {"schema_version": "newsreader.daily.v1", "items": []})
-        write_json(fresh_sidecar, {"schema_version": "newsreader.daily.v1", "items": []})
+        write_json(stale_fresh_sidecar, {"schema_version": "legacy", "items": []})
 
         env = dict(os.environ)
         env["NEWSFLOW_EXPORT_ROOT"] = str(target_root)
@@ -1709,11 +1880,11 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertTrue(payload["ok"])
-        self.assertEqual(len(payload["exported"]), 4)
+        self.assertEqual(len(payload["exported"]), 3)
         self.assertTrue((month_dir / daily_path.name).exists())
         self.assertTrue((month_dir / fresh_path.name).exists())
         self.assertTrue((month_dir / daily_sidecar.name).exists())
-        self.assertTrue((month_dir / fresh_sidecar.name).exists())
+        self.assertFalse((month_dir / "2026-04-09-12-05_freshNews.newsreader.json").exists())
 
     def test_export_cli_target_root_overrides_environment(self) -> None:
         source_dir = self.root / "out"
@@ -1726,7 +1897,6 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         write_text(daily_path, "# daily\n")
         write_text(fresh_path, "# fresh\n")
         write_json(daily_path.with_suffix(".newsreader.json"), {"items": []})
-        write_json(fresh_path.with_suffix(".newsreader.json"), {"items": []})
         env = dict(os.environ)
         env["NEWSFLOW_EXPORT_ROOT"] = str(env_root)
         result = subprocess.run(
@@ -1775,10 +1945,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         daily_path = source_dir / "dailyFreshNews_2026-04-09.md"
         fresh_path = source_dir / "2026-04-09-12-05_freshNews.md"
-        fresh_sidecar = source_dir / "2026-04-09-12-05_freshNews.newsreader.json"
         write_text(daily_path, "# daily\n")
         write_text(fresh_path, "# fresh\n")
-        write_json(fresh_sidecar, {"schema_version": "newsreader.daily.v1", "items": []})
 
         env = dict(os.environ)
         env["NEWSFLOW_EXPORT_ROOT"] = str(target_root)
@@ -1926,7 +2094,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(self.out_dir),
         )
         self.assertEqual(finalized.returncode, 0, finalized.stderr)
-        sidecar = read_json(self.run_sidecar_path("quote-canonical"))
+        sidecar = read_json(self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json")
         self.assertEqual(sidecar["items"][0]["quoted_text_zh"], "规范中文引用")
         self.assertEqual(sidecar["items"][0]["quoted_text"], "规范中文引用")
 
@@ -2113,7 +2281,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(data["issue_count"], 0)
         self.assertEqual(data["issues"], [])
 
-    def test_plan_translations_batches_long_twitter_and_skips_cjk_auto_title(self) -> None:
+    def test_plan_translations_uses_one_capacity_batch_and_skips_han_auto_title(self) -> None:
         run_dir = self.make_run_dir("translation-plan")
         incremental_json = run_dir / "incremental.json"
         translated_json = run_dir / "translated.json"
@@ -2124,7 +2292,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "raw_title": f"English {index}", "time": "2026-04-09 12:00:00",
                 "url": f"https://example.com/plan-{index}",
             }
-            for index in range(9)
+            for index in range(40)
         ]
         items.insert(2, {
             "section": "Ilya Sutskever", "translation_policy": "auto", "title": "x" * 1000,
@@ -2149,16 +2317,57 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = read_json(plan_json)
-        self.assertEqual(plan["batch_size"], 8)
+        self.assertEqual(plan["batch_source_char_limit"], 12000)
         batches = plan["batches"]
-        self.assertTrue(all(len(batch["expected_urls"]) <= 8 for batch in batches))
-        long_batch = next(batch for batch in batches if "https://x.com/example/status/long?s=20" in batch["expected_urls"])
-        self.assertEqual(long_batch["expected_urls"], ["https://x.com/example/status/long?s=20"])
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0]["source_chars"], plan["total_source_chars"])
         cjk_item = next(
             item for batch in batches for item in batch["items"]
             if item["url"] == "https://x.com/example/status/cjk?s=20"
         )
         self.assertEqual(cjk_item["required_fields"], ["quoted_text_zh"])
+
+    def test_plan_translations_splits_only_after_source_character_capacity(self) -> None:
+        run_dir = self.make_run_dir("translation-capacity")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        plan_json = run_dir / "translation-plan.json"
+        items = [
+            {
+                "section": "world",
+                "translation_policy": "always",
+                "title": character * 7000,
+                "raw_title": character * 7000,
+                "time": "2026-04-09 12:00:00",
+                "url": f"https://example.com/capacity-{index}",
+            }
+            for index, character in enumerate(("a", "b"), start=1)
+        ]
+        write_json(
+            incremental_json,
+            self.make_incremental_payload(
+                run_dir=run_dir,
+                run_id="translation-capacity",
+                started_at="2026-04-09 12:00:00",
+                finished_at="2026-04-09 12:05:00",
+                run_fresh_items=items,
+            ),
+        )
+        write_json(translated_json, {})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT), "plan-translations",
+            "--incremental-json", str(incremental_json),
+            "--translated-json", str(translated_json),
+            "--out-json", str(plan_json), "--phase", "initial",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = read_json(plan_json)
+        self.assertEqual(plan["total_source_chars"], 14000)
+        self.assertEqual([batch["source_chars"] for batch in plan["batches"]], [7000, 7000])
+        self.assertEqual(
+            [batch["items"][0]["raw_title"] for batch in plan["batches"]],
+            ["a" * 7000, "b" * 7000],
+        )
 
     def test_merge_translation_batch_requires_exact_urls_and_is_atomic(self) -> None:
         run_dir = self.make_run_dir("translation-merge")
@@ -2406,8 +2615,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         repair_plan = run_dir / "translation-repair-plan.json"
         items = [
             {
-                "section": "world", "translation_policy": "always", "title": f"English {index}",
-                "raw_title": f"English {index}", "time": "2026-04-09 12:00:00",
+                "section": "world", "translation_policy": "always", "title": f"English {index} " + "x" * 1490,
+                "raw_title": f"English {index} " + "x" * 1490, "time": "2026-04-09 12:00:00",
                 "url": f"https://example.com/multi-{index}",
             }
             for index in range(9)

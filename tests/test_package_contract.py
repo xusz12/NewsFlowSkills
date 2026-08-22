@@ -21,6 +21,7 @@ def test_payload_contains_only_runtime_files() -> None:
         "agents/openai.yaml",
         "references/commands.json",
         "scripts/export_outputs.py",
+        "scripts/newsflow_common.py",
         "scripts/run_incremental_news.py",
         "scripts/run_news_pipeline.py",
     }
@@ -54,6 +55,8 @@ def test_main_skill_is_runtime_neutral_and_complete() -> None:
         "Prepare recovery policy:",
         "plan-translations",
         "merge-translation-batch",
+        "section_metadata",
+        "batch_source_char_limit",
         "Validation workflow:",
         "one permitted repair plan",
         "Finalize recovery policy:",
@@ -93,7 +96,7 @@ def test_readme_documents_project_lifecycle() -> None:
         "**读取配置并顺序采集**",
         "**全局去重并生成 current**",
         "**Prepare 日内增量**",
-        "**Initial translation plan、batches 与 exact merge**",
+        "**Initial translation plan、capacity batches 与 exact merge**",
         "**Validate 与一次 repair**",
         "**Finalize 原子落盘**",
         "**可选 export**",
@@ -106,7 +109,8 @@ def test_readme_documents_project_lifecycle() -> None:
     assert "让 agent 使用 `$newsflow`" in content
     assert "当前仍是本地候选版本" in content
     assert "dailyFreshNews_YYYY-MM-DD.newsreader.json" in content
-    assert "YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json" in content
+    assert "YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json" not in content
+    assert "per-run freshNews 不生成 sidecar" in content
     assert "--target-root" in content
     assert "NEWSFLOW_EXPORT_ROOT" in content
     for agent in ("codex", "claude-code", "kimi-code-cli", "pi"):

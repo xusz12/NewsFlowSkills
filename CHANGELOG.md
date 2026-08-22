@@ -1,6 +1,14 @@
 # Changelog
 
-## v1.1.3（待发布）— 稳定 per-run 输出与可移植导出
+## v1.2.1（待发布）— 来源快照、容量翻译与文本边界
+
+- 将来源显示名、类型、身份、命令、重试门槛和翻译策略收敛到 `commands.json`；pipeline 生成本轮 `section_metadata` 快照，prepare/finalize 不再依赖可变配置。
+- 翻译计划取消固定 8 URL 和长推文 1000 字符特例，改按必需标题、引用与摘要的源文字总量分批；默认 12,000 字符以内单批，长文本不截断。
+- 抽取两个脚本完全相同的原子写入、JSON、时间与翻译策略 helper，并删除未调用的旧翻译 warning helper。
+- Han 检测覆盖 Unicode 扩展区；带 offset、ISO 与无 offset 本地时间统一到目标时区；Markdown 标题和 URL 特殊字符安全转义。
+- 只保留每日累计 `dailyFreshNews_YYYY-MM-DD.newsreader.json`；不再生成或导出 per-run `*_freshNews.newsreader.json`，但不会删除历史文件，旧 state 的 `run_sidecar_path` 继续兼容读取。
+
+## v1.1.3（2026-08-22）— 稳定 per-run 输出与可移植导出
 
 - per-run 文件名改为 `YYYY-MM-DD-HH-mm-ss-<sha256前12位>`，由不可变 `generated_at + run_id` 确定，避免同分钟或同秒运行互相覆盖。
 - 统一 `quoted_text_zh` 为引用文本 canonical 字段；旧 `quoted_text` 仅作兼容回退，冲突值会被验证拦截并要求修复。

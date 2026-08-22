@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+_previous_dont_write_bytecode = sys.dont_write_bytecode
+sys.dont_write_bytecode = True
+from newsflow_common import (  # noqa: E402
+    VALID_TRANSLATION_POLICIES,
+    format_timestamp,
+    normalize_time,
+    write_json_file,
+)
+sys.dont_write_bytecode = _previous_dont_write_bytecode
 
 
 NOISE_PREFIXES = (
@@ -20,52 +32,11 @@ NOISE_PREFIXES = (
     "To eliminate this warning",
     "(Use `node --trace-warnings",
 )
-TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
-VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
 DISPLAY_TIME_FORMAT = "%Y-%m-%d %H:%M"
-
-
-def format_timestamp(dt: datetime) -> str:
-    return dt.strftime(TIMESTAMP_FORMAT)
 
 
 def make_run_id(started_at: datetime) -> str:
     return started_at.strftime("%Y%m%d-%H%M%S-%f")
-
-
-def write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(text)
-            temp_path = Path(handle.name)
-        os.replace(temp_path, path)
-    except Exception:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-        raise
-
-
-def write_json_file(path: Path, payload: Any) -> None:
-    write_text_atomic(
-        path,
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-    )
-
-
-def normalize_time(raw_time: Any) -> str:
-    if raw_time is None:
-        return "页面未显示"
-    text = str(raw_time).strip()
-    return text if text else "页面未显示"
 
 
 def normalize_twitter_local_time(raw_time: Any, *, output_timezone: str) -> str:
@@ -73,14 +44,20 @@ def normalize_twitter_local_time(raw_time: Any, *, output_timezone: str) -> str:
     if not text:
         return "页面未显示"
 
+    candidates: list[datetime] = []
+    try:
+        candidates.append(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError:
+        pass
     for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%d %H:%M"):
         try:
-            parsed = datetime.strptime(text, fmt)
-        except Exception:
+            candidates.append(datetime.strptime(text, fmt))
+        except ValueError:
             continue
 
+    for parsed in candidates:
         if parsed.tzinfo is None:
-            return parsed.strftime(DISPLAY_TIME_FORMAT)
+            parsed = parsed.replace(tzinfo=ZoneInfo(output_timezone))
         return parsed.astimezone(ZoneInfo(output_timezone)).strftime(DISPLAY_TIME_FORMAT)
 
     return normalize_time(raw_time)
@@ -194,6 +171,35 @@ def parse_command(raw_command: Any) -> list[str]:
 def compact_text(raw: Any) -> str:
     text = str(raw or "").strip()
     return " ".join(text.split())
+
+
+def source_defaults(
+    section: str,
+    command: list[str],
+    source_type: str,
+    source_name: str,
+    display_name: str,
+) -> tuple[str, str, str]:
+    """Fill legacy config metadata without coupling incremental logic to section lists."""
+    resolved_type = source_type
+    if not resolved_type:
+        if command[:3] == ["opencli", "twitter", "tweets"]:
+            resolved_type = "twitter"
+        elif len(command) > 1 and command[1] == "ReutersBrowser":
+            resolved_type = "reuters"
+        elif len(command) > 1 and command[1] == "BloombergUser":
+            resolved_type = "bloomberg"
+        else:
+            resolved_type = "site"
+
+    default_names = {
+        "reuters": "Reuters",
+        "bloomberg": "Bloomberg",
+        "twitter": section,
+    }
+    resolved_name = source_name or default_names.get(resolved_type, section)
+    resolved_display = display_name or resolved_name
+    return resolved_type, resolved_name, resolved_display
 
 
 def normalize_row(
@@ -459,6 +465,7 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
         raise ValueError("config root must be an array")
 
     parsed: list[dict[str, Any]] = []
+    seen_sections: set[str] = set()
     for i, item in enumerate(raw, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"config item #{i} must be object")
@@ -466,6 +473,9 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
         section = str(item.get("section", "")).strip()
         if not section:
             raise ValueError(f"config item #{i} missing section")
+        if section in seen_sections:
+            raise ValueError(f"config item #{i} duplicates section: {section}")
+        seen_sections.add(section)
 
         command = parse_command(item.get("command"))
 
@@ -485,6 +495,7 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
         source_type = str(item.get("source_type", "")).strip().lower()
         source_handle = str(item.get("source_handle", "")).strip().lstrip("@")
         source_name = str(item.get("source_name", "")).strip()
+        display_name = str(item.get("display_name", "")).strip()
         command_is_twitter = command[:3] == ["opencli", "twitter", "tweets"]
         fallback_is_twitter = (
             fallback_command is not None
@@ -494,6 +505,9 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"config item #{i} Twitter command requires source_type=twitter"
             )
+        source_type, source_name, display_name = source_defaults(
+            section, command, source_type, source_name, display_name
+        )
         if source_type == "twitter" and (not source_handle or not source_name):
             raise ValueError(
                 f"config item #{i} with source_type=twitter requires source_handle and source_name"
@@ -524,6 +538,7 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
                 "source_type": source_type,
                 "source_handle": source_handle,
                 "source_name": source_name,
+                "display_name": display_name,
             }
         )
 
@@ -541,6 +556,16 @@ def run_pipeline(
     recovered_attempts: list[dict[str, Any]] = []
     timing_rows: list[dict[str, Any]] = []
     pipeline_started_monotonic = time.monotonic()
+    section_metadata = {
+        entry["section"]: {
+            "display_name": entry["display_name"],
+            "source_type": entry["source_type"],
+            "source_name": entry["source_name"],
+            "source_handle": entry["source_handle"],
+            "translation_policy": entry["translation_policy"],
+        }
+        for entry in entries
+    }
 
     for entry in entries:
         section_started_monotonic = time.monotonic()
@@ -738,6 +763,7 @@ def run_pipeline(
 
     return {
         "section_order": section_order,
+        "section_metadata": section_metadata,
         "grouped_items": grouped,
         "deduped_items": deduped_items,
         "errors": errors,

@@ -75,15 +75,16 @@ Non-recoverable prepare codes:
    - `daily_errors`: accumulated errors and recovered degradations for the current day.
    - `run_id` / `started_at` / `finished_at`: immutable run identity fields. Downstream steps must preserve them exactly.
    - `run_output_stem`: deterministic `YYYY-MM-DD-HH-mm-ss-<sha256前12位>` stem derived from `generated_at + run_id`; use it for per-run output names.
+   - `section_metadata`: immutable per-run snapshot of source display/classification/translation metadata; downstream steps must use this snapshot rather than reread a mutable config.
    - `state_snapshot`: the latest finalized daily state seen during `prepare`. `finalize` will reject stale snapshots.
 8. Translate display text into Chinese in-model:
-   - Create the initial deterministic plan. The script derives required fields, keeps the existing `auto` rule that any CJK title (including mixed-language) does not need title translation, while still planning an English quote or Bloomberg summary when required.
+   - Create the initial deterministic plan. The script derives required fields and keeps the existing `auto` rule that any title containing a Unicode Han character (including mixed-language text) does not need title translation, while still planning an English quote or Bloomberg summary when required. This is a character check, not language detection: Japanese text containing Kanji also satisfies it.
 
 ```bash
 python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" plan-translations --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>" --out-json "<RUN_DIR>/translation-plan.json" --phase initial
 ```
 
-   - Translate each `batches[*].items` in `translation-plan.json`; every batch has at most 8 URLs. A Twitter item's `raw_title + quoted_text_raw` of at least 1000 characters is deliberately isolated in its own batch.
+   - Translate each `batches[*].items` in `translation-plan.json`. The plan counts only required source text from titles, quotes, and summaries. Up to `batch_source_char_limit` (currently 12,000 characters) stays in one batch; larger input is split by source-text capacity. No item is truncated or summarized to fit, and one oversized item remains intact in its own batch.
    - Write each model result as `<RUN_DIR>/translation-initial-batch-NNN.json`, using exactly the batch's `expected_urls` as its top-level URL keys. Do not add, omit, or substitute a URL.
    - Merge each batch only through the script, which checks the exact URL set and required fields before atomically updating the cumulative map:
 
@@ -150,6 +151,7 @@ python3 "<SKILL_ROOT>/scripts/export_outputs.py" --daily "<daily_fresh_path>" --
 ```
 
 Export rules:
+- Export copies the daily Markdown, per-run fresh Markdown, and the daily `.newsreader.json` sidecar. Per-run freshNews has no sidecar and export must not require or copy one.
 - Export root precedence is: `--target-root` CLI argument, `NEWSFLOW_EXPORT_ROOT`, then the legacy personal default `/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`.
 - When the legacy default is used, the command prints a compatibility warning to stderr; pass an explicit root for portable use.
 - If the root directory does not exist, export fails with explicit error and root path.
@@ -188,6 +190,8 @@ Non-recoverable finalize codes:
    - `dailyFreshNews_YYYY-MM-DD.md`: one rolling summary file per day.
    - `YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.md`: one collision-resistant per-run fresh-news file.
    - Timezone: `Asia/Shanghai` unless user explicitly requests another timezone.
+   - Finalize also writes only `dailyFreshNews_YYYY-MM-DD.newsreader.json`; it must not create a per-run `*_freshNews.newsreader.json`.
+   - Do not delete a legacy per-run sidecar if one already exists. Older state entries may contain `run_sidecar_path`; accept and ignore that field, while new run records must not write it.
 11. Hidden state is stored separately in the state directory, one JSON file per day.
 12. Safety rules:
    - `prepare` and `finalize` now require run artifacts to live under `<STATE_DIR>/runs/<run-dir>/`.
@@ -222,6 +226,10 @@ Use JSON array of objects:
 [
   {
     "section": "middle-east",
+    "display_name": "Reuters · Middle East",
+    "source_type": "reuters",
+    "source_name": "Reuters",
+    "translation_policy": "always",
     "command": ["opencli", "ReutersBrowser", "news", "https://www.reuters.com/world/middle-east/", "--limit", "10", "--format", "json"]
   }
 ]
@@ -231,6 +239,7 @@ Rules:
 - Keep order as desired final processing order.
 - Add/remove sources by adding/removing objects only.
 - `command` supports string array (recommended) or shell string.
+- `display_name`, `source_type`, and `source_name` define the source metadata snapshot consumed by prepare/finalize; Twitter also requires `source_handle`.
 - Optional reliability fields are supported per source:
   - `retry_once`: retry the primary command once before recording failure.
   - `fallback_command`: secondary command when primary still fails.

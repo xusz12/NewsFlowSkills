@@ -160,7 +160,6 @@ def main() -> int:
         )
         return 2
     daily_sidecar_path = sidecar_path_for(daily_path)
-    fresh_sidecar_path = sidecar_path_for(fresh_path)
     if not daily_sidecar_path.exists():
         print(
             json.dumps(
@@ -174,20 +173,6 @@ def main() -> int:
             )
         )
         return 2
-    if not fresh_sidecar_path.exists():
-        print(
-            json.dumps(
-                fail_payload(
-                    "source_sidecar_not_found",
-                    target_root,
-                    {"missing_path": str(fresh_sidecar_path)},
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return 2
-
     try:
         check_root_exists(target_root)
     except Exception:
@@ -228,11 +213,9 @@ def main() -> int:
         daily_target = month_dir / daily_path.name
         fresh_target = month_dir / fresh_path.name
         daily_sidecar_target = month_dir / daily_sidecar_path.name
-        fresh_sidecar_target = month_dir / fresh_sidecar_path.name
         copy_overwrite(daily_path, daily_target)
         copy_overwrite(fresh_path, fresh_target)
         copy_overwrite(daily_sidecar_path, daily_sidecar_target)
-        copy_overwrite(fresh_sidecar_path, fresh_sidecar_target)
     except PermissionError as exc:
         print(
             json.dumps(
@@ -259,7 +242,6 @@ def main() -> int:
             {"source": str(daily_path), "target": str(daily_target)},
             {"source": str(fresh_path), "target": str(fresh_target)},
             {"source": str(daily_sidecar_path), "target": str(daily_sidecar_target)},
-            {"source": str(fresh_sidecar_path), "target": str(fresh_sidecar_target)},
         ],
         "errors": [],
     }

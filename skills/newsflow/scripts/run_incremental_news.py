@@ -2,52 +2,33 @@
 import argparse
 import hashlib
 import json
-import os
 import shlex
 import sys
-import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+_previous_dont_write_bytecode = sys.dont_write_bytecode
+sys.dont_write_bytecode = True
+from newsflow_common import (  # noqa: E402
+    TIMESTAMP_FORMAT,
+    VALID_TRANSLATION_POLICIES,
+    format_timestamp,
+    normalize_time,
+    write_json_file,
+    write_text_atomic,
+)
+sys.dont_write_bytecode = _previous_dont_write_bytecode
 
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 RUNS_DIRNAME = "runs"
-TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
-PORTAL_SECTIONS = {
-    "middle-east",
-    "china",
-    "world",
-    "business",
-    "technology",
-    "bloomberg_main",
-    "bloomberg_politics",
-    "bloomberg_economics",
-    "bloomberg_tech",
-    "techcrunch",
-    "arstechnica",
-}
-BLOOMBERG_SECTIONS = {
-    "bloomberg_main",
-    "bloomberg_politics",
-    "bloomberg_economics",
-    "bloomberg_tech",
-}
-SECTION_DISPLAY_NAMES = {
-    "middle-east": "Reuters · Middle East",
-    "china": "Reuters · China",
-    "world": "Reuters · World",
-    "business": "Reuters · Business",
-    "technology": "Reuters · Technology",
-    "bloomberg_main": "Bloomberg",
-    "bloomberg_politics": "Bloomberg · Politics",
-    "bloomberg_economics": "Bloomberg · Economics",
-    "bloomberg_tech": "Bloomberg · Tech",
-    "techcrunch": "TechCrunch",
-    "arstechnica": "Ars Technica",
-}
 PREPARE_RECOVERABLE_ERROR_CODES = frozenset(
     {
         "PREPARE_STALE_CURRENT_JSON",
@@ -60,9 +41,7 @@ FINALIZE_RECOVERABLE_ERROR_CODES = frozenset(
         "FINALIZE_STATE_CHANGED_SINCE_PREPARE",
     }
 )
-VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
-TRANSLATION_BATCH_SIZE = 8
-LONG_TWITTER_TRANSLATION_CHARS = 1000
+TRANSLATION_BATCH_SOURCE_CHAR_LIMIT = 12_000
 RUN_OUTPUT_STEM_HASH_LENGTH = 12
 TRANSLATION_OUTPUT_FIELDS = frozenset(
     {"title", "quoted_text", "quoted_text_zh", "summary", "summary_zh"}
@@ -91,10 +70,6 @@ def is_recoverable_finalize_error_code(code: str) -> bool:
     return code in FINALIZE_RECOVERABLE_ERROR_CODES
 
 
-def format_timestamp(dt: datetime) -> str:
-    return dt.strftime(TIMESTAMP_FORMAT)
-
-
 def make_run_output_stem(generated_at: datetime, run_id: str) -> str:
     """Derive a readable, deterministic and collision-resistant output stem."""
     digest_input = f"{format_timestamp(generated_at)}\0{str(run_id).strip()}".encode(
@@ -114,42 +89,18 @@ def parse_timestamp(text: str, *, field_name: str) -> datetime:
         raise ValueError(f"Invalid {field_name} '{value}': {exc}") from exc
 
 
-def write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(text)
-            temp_path = Path(handle.name)
-        os.replace(temp_path, path)
-    except Exception:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-        raise
-
-
 def write_text_new_file(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:
         handle.write(text)
 
 
-def normalize_time(raw_time: Any) -> str:
-    if raw_time is None:
-        return "页面未显示"
-    text = str(raw_time).strip()
-    return text if text else "页面未显示"
+def escape_markdown_link_text(text: str) -> str:
+    return str(text).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
 
-def escape_md_title(title: str) -> str:
-    return title.replace("[", "\\[").replace("]", "\\]")
+def markdown_link_destination(url: str) -> str:
+    return quote(str(url).strip(), safe=":/?#[]@!$&'*+,;=%")
 
 
 def render_blockquote(text: str) -> list[str]:
@@ -172,13 +123,6 @@ def load_json_file(path: Path) -> Any:
         raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
 
 
-def write_json_file(path: Path, payload: Any) -> None:
-    write_text_atomic(
-        path,
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-    )
-
-
 def parse_command_str(command: Any, command_str: str) -> str:
     if command_str:
         return command_str
@@ -191,8 +135,21 @@ def parse_command_str(command: Any, command_str: str) -> str:
     return ""
 
 
-def contains_cjk(text: str) -> bool:
-    return any("\u4e00" <= ch <= "\u9fff" for ch in str(text or ""))
+HAN_RANGES = (
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xF900, 0xFAFF),
+    (0x20000, 0x2EE5F),
+    (0x30000, 0x323AF),
+)
+
+
+def contains_han(text: str) -> bool:
+    return any(
+        start <= ord(char) <= end
+        for char in str(text or "")
+        for start, end in HAN_RANGES
+    )
 
 
 def normalize_translation_policy(raw: Any) -> str:
@@ -218,12 +175,14 @@ def normalize_item(item: Any) -> dict[str, str] | None:
 
     quoted_text_raw = str(item.get("quoted_text_raw", item.get("quoted_text", ""))).strip()
     quoted_text = str(item.get("quoted_text", quoted_text_raw)).strip()
+    quoted_text_zh = str(item.get("quoted_text_zh", "")).strip()
     author_name = str(item.get("author_name", "")).strip()
     author_screen_name = str(item.get("author_screen_name", "")).strip()
     source_type = str(item.get("source_type", "")).strip().lower()
     source_handle = str(item.get("source_handle", "")).strip().lstrip("@")
     source_name = str(item.get("source_name", "")).strip()
     summary = str(item.get("summary", "")).strip()
+    summary_raw = str(item.get("summary_raw", summary)).strip()
 
     payload = {
         "section": section,
@@ -237,6 +196,8 @@ def normalize_item(item: Any) -> dict[str, str] | None:
         payload["quoted_text_raw"] = quoted_text_raw
     if quoted_text:
         payload["quoted_text"] = quoted_text
+    if quoted_text_zh:
+        payload["quoted_text_zh"] = quoted_text_zh
     if author_name:
         payload["author_name"] = author_name
     if author_screen_name:
@@ -249,6 +210,8 @@ def normalize_item(item: Any) -> dict[str, str] | None:
         payload["source_name"] = source_name
     if summary:
         payload["summary"] = summary
+    if summary_raw:
+        payload["summary_raw"] = summary_raw
     return payload
 
 
@@ -394,14 +357,99 @@ def section_order_from_items(items: list[dict[str, str]]) -> list[str]:
 
 
 def sort_sections(section_order: list[str]) -> list[str]:
-    portal_sections: list[str] = []
-    other_sections: list[str] = []
-    for section in section_order:
-        if section in PORTAL_SECTIONS:
-            portal_sections.append(section)
+    return merge_section_order(section_order)
+
+
+def infer_source_metadata(item: dict[str, str]) -> tuple[str, str]:
+    explicit_type = str(item.get("source_type", "")).strip().lower()
+    explicit_name = str(item.get("source_name", "")).strip()
+    if explicit_type:
+        return explicit_type, explicit_name or item["section"]
+    if is_twitter_item(item):
+        return "twitter", explicit_name or "X"
+
+    hostname = (urlsplit(str(item.get("url", ""))).hostname or "").lower()
+    section = item["section"]
+    if "bloomberg" in hostname or section.startswith("bloomberg_"):
+        return "bloomberg", "Bloomberg"
+    if "reuters" in hostname:
+        return "reuters", "Reuters"
+    if "techcrunch" in hostname or section == "techcrunch":
+        return "site", "TechCrunch"
+    if "arstechnica" in hostname or section == "arstechnica":
+        return "site", "Ars Technica"
+    return "other", explicit_name or section
+
+
+def legacy_display_name(section: str, source_type: str, source_name: str) -> str:
+    if source_type in {"reuters", "bloomberg"}:
+        suffix = section
+        if source_type == "bloomberg" and suffix.startswith("bloomberg_"):
+            suffix = suffix.removeprefix("bloomberg_")
+        suffix = suffix.replace("_", " ").replace("-", " ").title()
+        if suffix in {"Main", ""}:
+            return source_name
+        return f"{source_name} · {suffix}"
+    return source_name or section
+
+
+def normalize_section_metadata(
+    raw_metadata: Any,
+    section_order: list[str],
+    items: list[dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Normalize the immutable per-run source display/classification snapshot."""
+    normalized: dict[str, dict[str, str]] = {}
+    metadata_provided = raw_metadata is not None
+    if metadata_provided and not isinstance(raw_metadata, dict):
+        raise ValueError("section_metadata must contain an object")
+    if isinstance(raw_metadata, dict):
+        for raw_section, raw_value in raw_metadata.items():
+            section = str(raw_section).strip()
+            if not section or not isinstance(raw_value, dict):
+                raise ValueError("section_metadata entries must be named objects")
+            source_type = str(raw_value.get("source_type", "")).strip().lower()
+            source_name = str(raw_value.get("source_name", "")).strip()
+            display_name = str(raw_value.get("display_name", "")).strip()
+            if not source_type or not source_name or not display_name:
+                raise ValueError(
+                    f"section_metadata entry is incomplete for section: {section}"
+                )
+            entry = {
+                "display_name": display_name,
+                "source_type": source_type,
+                "source_name": source_name,
+                "translation_policy": normalize_translation_policy(
+                    raw_value.get("translation_policy", "auto")
+                ),
+            }
+            source_handle = str(raw_value.get("source_handle", "")).strip().lstrip("@")
+            if source_handle:
+                entry["source_handle"] = source_handle
+            normalized[section] = entry
+
+    first_by_section: dict[str, dict[str, str]] = {}
+    for item in items:
+        first_by_section.setdefault(item["section"], item)
+    required_sections = set(section_order)
+    for section in merge_section_order(section_order, list(first_by_section)):
+        if section in normalized:
             continue
-        other_sections.append(section)
-    return portal_sections + other_sections
+        if metadata_provided and section in required_sections:
+            raise ValueError(
+                f"section_metadata is missing configured section: {section}"
+            )
+        item = first_by_section.get(section, {"section": section, "url": ""})
+        source_type, source_name = infer_source_metadata(item)
+        normalized[section] = {
+            "display_name": legacy_display_name(section, source_type, source_name),
+            "source_type": source_type,
+            "source_name": source_name,
+            "translation_policy": normalize_translation_policy(
+                item.get("translation_policy", "auto")
+            ),
+        }
+    return normalized
 
 
 def parse_sortable_time(text: str) -> datetime | None:
@@ -436,8 +484,15 @@ def sort_section_items(section_items: list[dict[str, str]]) -> list[dict[str, st
     return [item for _, item in sorted(indexed_items, key=sort_key)]
 
 
-def get_section_display_name(section: str) -> str:
-    return SECTION_DISPLAY_NAMES.get(section, section)
+def get_section_display_name(
+    section: str,
+    section_metadata: dict[str, dict[str, str]],
+) -> str:
+    return section_metadata.get(section, {}).get("display_name", section)
+
+
+def is_bloomberg_item(item: dict[str, str]) -> bool:
+    return infer_source_metadata(item)[0] == "bloomberg"
 
 
 def build_section_summary(section_items: list[dict[str, str]]) -> str:
@@ -505,6 +560,7 @@ def build_markdown(
     section_order: list[str],
     items: list[dict[str, str]],
     errors: list[dict[str, str]],
+    section_metadata: dict[str, dict[str, str]],
 ) -> str:
     sorted_section_order = sort_sections(section_order)
     grouped: dict[str, list[dict[str, str]]] = {section: [] for section in sorted_section_order}
@@ -521,18 +577,21 @@ def build_markdown(
     lines: list[str] = []
     for index, section in enumerate(non_empty_sections):
         section_items = sorted_grouped[section]
-        lines.append(f"## {get_section_display_name(section)}（{len(section_items)}条）")
+        lines.append(f"## {get_section_display_name(section, section_metadata)}（{len(section_items)}条）")
         lines.append("")
         lines.append(f"> {build_section_summary(section_items)}")
         lines.append("")
         for item in section_items:
-            lines.append(f"### [{escape_md_title(item['title'])}]({item['url']})")
+            lines.append(
+                f"### [{escape_markdown_link_text(item['title'])}]"
+                f"({markdown_link_destination(item['url'])})"
+            )
             quoted_text = str(item.get("quoted_text", "")).strip()
             if quoted_text:
                 lines.extend(render_blockquote(quoted_text))
             lines.append(f"- 发布时间：{item['time']}")
             summary = str(item.get("summary", "")).strip()
-            if item.get("section") in BLOOMBERG_SECTIONS and summary:
+            if is_bloomberg_item(item) and summary:
                 lines.append(f"- 摘要：{summary}")
             lines.append("")
         if index < len(non_empty_sections) - 1:
@@ -543,7 +602,7 @@ def build_markdown(
     lines.append("")
     if empty_sections:
         for section in empty_sections:
-            lines.append(f"- {get_section_display_name(section)}")
+            lines.append(f"- {get_section_display_name(section, section_metadata)}")
     else:
         lines.append("- 无")
     lines.append("")
@@ -610,12 +669,12 @@ def translation_required_for_text(policy: str, source_text: str) -> bool:
         return False
     if policy == "always":
         return True
-    return bool(source_text.strip()) and (not contains_cjk(source_text))
+    return bool(source_text.strip()) and (not contains_han(source_text))
 
 
 def has_chinese_translated_title(translated: dict[str, str]) -> bool:
     title = str(translated.get("title", "")).strip()
-    return bool(title) and contains_cjk(title)
+    return bool(title) and contains_han(title)
 
 
 def has_chinese_translated_quote(translated: dict[str, str]) -> bool:
@@ -639,12 +698,12 @@ def translated_quote_resolution(
     if (
         quoted_text_zh
         and quoted_text
-        and contains_cjk(quoted_text_zh)
-        and contains_cjk(quoted_text)
+        and contains_han(quoted_text_zh)
+        and contains_han(quoted_text)
         and quoted_text_zh != quoted_text
     ):
         return quoted_text_zh, "conflict", ""
-    if not contains_cjk(canonical):
+    if not contains_han(canonical):
         return canonical, "non_chinese", ""
     warning = ""
     if quoted_text_zh and quoted_text and quoted_text_zh != quoted_text:
@@ -655,9 +714,9 @@ def translated_quote_resolution(
 def has_chinese_translated_summary(translated: dict[str, str]) -> bool:
     summary_zh = str(translated.get("summary_zh", "")).strip()
     summary = str(translated.get("summary", "")).strip()
-    if summary_zh and contains_cjk(summary_zh):
+    if summary_zh and contains_han(summary_zh):
         return True
-    return bool(summary) and contains_cjk(summary)
+    return bool(summary) and contains_han(summary)
 
 
 def issue_for_item(
@@ -695,19 +754,13 @@ def required_translation_fields(
 
     summary = str(item.get("summary", "")).strip()
     if (
-        item.get("section") in BLOOMBERG_SECTIONS
+        is_bloomberg_item(item)
         and summary
         and translation_required_for_text(policy, summary)
         and not has_chinese_translated_summary(current)
     ):
         required.append("summary")
     return required
-
-
-def is_long_twitter_translation(item: dict[str, str]) -> bool:
-    if not is_twitter_item(item):
-        return False
-    return len(item.get("raw_title", "")) + len(item.get("quoted_text_raw", "")) >= LONG_TWITTER_TRANSLATION_CHARS
 
 
 def translation_plan_item(item: dict[str, str], required_fields: list[str]) -> dict[str, Any]:
@@ -723,6 +776,19 @@ def translation_plan_item(item: dict[str, str], required_fields: list[str]) -> d
     if item.get("summary"):
         payload["summary"] = item["summary"]
     return payload
+
+
+def translation_source_chars(entry: dict[str, Any]) -> int:
+    field_sources = {
+        "title": "raw_title",
+        "quoted_text_zh": "quoted_text_raw",
+        "summary": "summary",
+    }
+    return sum(
+        len(str(entry.get(field_sources[field], "")))
+        for field in entry.get("required_fields", [])
+        if field in field_sources
+    )
 
 
 def load_incremental_items(path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -937,6 +1003,7 @@ def plan_translations(args: argparse.Namespace) -> int:
     ]
     batches: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
+    pending_source_chars = 0
 
     def append_batch(entries: list[dict[str, Any]]) -> None:
         if not entries:
@@ -947,20 +1014,22 @@ def plan_translations(args: argparse.Namespace) -> int:
                 "batch_id": f"batch-{number:03d}",
                 "expected_urls": [entry["url"] for entry in entries],
                 "items": entries,
+                "source_chars": sum(translation_source_chars(entry) for entry in entries),
             }
         )
 
     for entry in planned:
-        raw_item = next(item for item in items if item["url"] == entry["url"])
-        if is_long_twitter_translation(raw_item):
+        entry_source_chars = translation_source_chars(entry)
+        if pending and pending_source_chars + entry_source_chars > TRANSLATION_BATCH_SOURCE_CHAR_LIMIT:
             append_batch(pending)
             pending = []
-            append_batch([entry])
-            continue
+            pending_source_chars = 0
         pending.append(entry)
-        if len(pending) == TRANSLATION_BATCH_SIZE:
+        pending_source_chars += entry_source_chars
+        if pending_source_chars >= TRANSLATION_BATCH_SOURCE_CHAR_LIMIT:
             append_batch(pending)
             pending = []
+            pending_source_chars = 0
     append_batch(pending)
 
     plan = {
@@ -970,8 +1039,8 @@ def plan_translations(args: argparse.Namespace) -> int:
         "incremental_sha256": current_incremental_sha256,
         "incremental_json_path": str(incremental_json_path),
         "translated_json_path": str(translated_json_path),
-        "batch_size": TRANSLATION_BATCH_SIZE,
-        "long_twitter_chars": LONG_TWITTER_TRANSLATION_CHARS,
+        "batch_source_char_limit": TRANSLATION_BATCH_SOURCE_CHAR_LIMIT,
+        "total_source_chars": sum(translation_source_chars(entry) for entry in planned),
         "batches": batches,
     }
     try:
@@ -1162,7 +1231,7 @@ def validate_translations(args: argparse.Namespace) -> int:
 
         summary = str(item.get("summary", "")).strip()
         if (
-            item.get("section") in BLOOMBERG_SECTIONS
+            is_bloomberg_item(item)
             and summary
             and translation_required_for_text(policy, summary)
         ):
@@ -1239,79 +1308,13 @@ def translated_summary_for(item: dict[str, str], translations: dict[str, dict[st
     )
 
 
-def bloomberg_summary_translation_warnings(
-    items: list[dict[str, str]],
-    translations: dict[str, dict[str, str]],
-) -> list[dict[str, str]]:
-    warnings: list[dict[str, str]] = []
-    for item in items:
-        if item.get("section") not in BLOOMBERG_SECTIONS:
-            continue
-        summary = str(item.get("summary", "")).strip()
-        if not summary or contains_cjk(summary):
-            continue
-        translated_summary = translated_summary_for(item, translations)
-        if not translated_summary:
-            warnings.append(
-                {
-                    "section": item["section"],
-                    "command_str": "",
-                    "error": "Bloomberg summary 未翻译，已使用原文摘要：{}".format(
-                        item["url"]
-                    ),
-                }
-            )
-            continue
-        if not contains_cjk(translated_summary):
-            warnings.append(
-                {
-                    "section": item["section"],
-                    "command_str": "",
-                    "error": "Bloomberg summary 翻译看起来仍非中文，已使用原文摘要：{}".format(
-                        item["url"]
-                    ),
-                }
-            )
-    return warnings
-
-
-def title_translation_warnings(
-    items: list[dict[str, str]],
-    translations: dict[str, dict[str, str]],
-) -> list[dict[str, str]]:
-    """Report required title translations that finalize must fall back from."""
-    warnings: list[dict[str, str]] = []
-    for item in items:
-        raw_title = str(item.get("raw_title", item.get("title", ""))).strip()
-        policy = normalize_translation_policy(item.get("translation_policy", "auto"))
-        if not translation_required_for_text(policy, raw_title):
-            continue
-
-        translated = translations.get(item["url"], {})
-        if not str(translated.get("title", "")).strip():
-            error = "title 未翻译，已使用原文标题"
-        elif not has_chinese_translated_title(translated):
-            error = "title 翻译看起来仍非中文，已保留模型标题"
-        else:
-            continue
-
-        warnings.append(
-            {
-                "section": item["section"],
-                "command_str": "",
-                "error": f"{error}：{item['url']}",
-            }
-        )
-    return warnings
-
-
 def final_summary_for(
     item: dict[str, str],
     translations: dict[str, dict[str, str]],
 ) -> str:
     original_summary = str(item.get("summary", "")).strip()
     translated_summary = translated_summary_for(item, translations)
-    if translated_summary and contains_cjk(translated_summary):
+    if translated_summary and contains_han(translated_summary):
         return translated_summary
     return original_summary
 
@@ -1336,6 +1339,8 @@ def finalize_item(item: dict[str, str], translations: dict[str, dict[str, str]])
     if quoted_text:
         result["quoted_text"] = quoted_text
         result["quoted_text_raw"] = quoted_text_raw or quoted_text
+    if translated_quote:
+        result["quoted_text_zh"] = translated_quote
     if item.get("author_name"):
         result["author_name"] = str(item.get("author_name", "")).strip()
     if item.get("author_screen_name"):
@@ -1348,6 +1353,9 @@ def finalize_item(item: dict[str, str], translations: dict[str, dict[str, str]])
         result["source_name"] = str(item.get("source_name", "")).strip()
     if summary:
         result["summary"] = summary
+    original_summary = str(item.get("summary_raw", item.get("summary", ""))).strip()
+    if original_summary:
+        result["summary_raw"] = original_summary
     return result
 
 
@@ -1359,25 +1367,6 @@ def is_twitter_item(item: dict[str, str]) -> bool:
     if hostname.startswith("www."):
         hostname = hostname[4:]
     return hostname in {"x.com", "twitter.com"}
-
-
-def infer_source_metadata(item: dict[str, str]) -> tuple[str, str]:
-    explicit_type = str(item.get("source_type", "")).strip().lower()
-    explicit_name = str(item.get("source_name", "")).strip()
-    if explicit_type:
-        return explicit_type, explicit_name or item["section"]
-    section = item["section"]
-    if is_twitter_item(item):
-        return "twitter", explicit_name or "X"
-    if section in BLOOMBERG_SECTIONS:
-        return "bloomberg", "Bloomberg"
-    if section == "techcrunch":
-        return "site", "TechCrunch"
-    if section == "arstechnica":
-        return "site", "Ars Technica"
-    if section in PORTAL_SECTIONS:
-        return "reuters", "Reuters"
-    return "other", section
 
 
 def canonicalize_item_url(url: str, source_type: str) -> str:
@@ -1410,6 +1399,7 @@ def build_newsreader_sidecar(
     items_final: list[dict[str, str]],
     translations: dict[str, dict[str, str]],
     errors: list[dict[str, str]],
+    section_metadata: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
     final_by_url = {item["url"]: item for item in items_final}
     sidecar_items: list[dict[str, Any]] = []
@@ -1421,15 +1411,19 @@ def build_newsreader_sidecar(
         translated_quote, _quote_status, _quote_warning = translated_quote_resolution(
             translated
         )
+        if not translated_quote:
+            translated_quote = str(raw_item.get("quoted_text_zh", "")).strip()
         source_type, source_name = infer_source_metadata(raw_item)
-        raw_summary = str(raw_item.get("summary", "")).strip()
+        raw_summary = str(
+            raw_item.get("summary_raw", raw_item.get("summary", ""))
+        ).strip()
         quoted_text_raw = str(
             raw_item.get("quoted_text_raw", raw_item.get("quoted_text", ""))
         ).strip()
         sidecar_entry: dict[str, Any] = {
             "item_order": order,
             "section": raw_item["section"],
-            "source": SECTION_DISPLAY_NAMES.get(raw_item["section"], raw_item["section"]),
+            "source": get_section_display_name(raw_item["section"], section_metadata),
             "source_type": source_type,
             "source_name": source_name,
             "title": final_item["title"],
@@ -1466,6 +1460,7 @@ def build_newsreader_sidecar(
             sidecar_entry["summary_zh"] = (
                 str(translated.get("summary_zh", "")).strip()
                 or str(translated.get("summary", "")).strip()
+                or str(final_item.get("summary", "")).strip()
             )
         sidecar_items.append(sidecar_entry)
 
@@ -1556,6 +1551,11 @@ def prepare_incremental(args: argparse.Namespace) -> int:
             )
             if item is not None
         ]
+        section_metadata = normalize_section_metadata(
+            raw_payload.get("section_metadata"),
+            current_section_order,
+            current_items,
+        )
         current_errors = [
             err
             for err in (
@@ -1563,7 +1563,7 @@ def prepare_incremental(args: argparse.Namespace) -> int:
             )
             if err is not None
         ]
-    except TypeError as exc:
+    except (TypeError, ValueError) as exc:
         raise incremental_error("PREPARE_BAD_CURRENT_JSON", str(exc)) from exc
     for error in current_errors:
         error["generated_at"] = run_meta["generated_at_text"]
@@ -1632,6 +1632,7 @@ def prepare_incremental(args: argparse.Namespace) -> int:
         "generated_at": run_meta["generated_at_text"],
         "timezone": timezone_name,
         "section_order": merged_section_order,
+        "section_metadata": section_metadata,
         "run_output_stem": run_output_stem,
         "run_file_timestamp": run_file_timestamp,
         "current_run_items_raw": current_items,
@@ -1849,6 +1850,14 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         )
         if item is not None
     ]
+    try:
+        section_metadata = normalize_section_metadata(
+            raw_payload.get("section_metadata"),
+            normalize_section_order(raw_payload.get("section_order", [])),
+            current_run_items_raw + today_state["today_first_seen_items"],
+        )
+    except ValueError as exc:
+        raise incremental_error("FINALIZE_BAD_INCREMENTAL_METADATA", str(exc)) from exc
     current_run_errors = [
         err
         for err in (
@@ -1899,7 +1908,6 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         raise incremental_error("FINALIZE_WRITE_FAILED", str(exc)) from exc
     run_fresh_path = out_dir / f"{run_output_stem}_freshNews.md"
     daily_fresh_path = out_dir / f"dailyFreshNews_{date_text}.md"
-    run_sidecar_path = out_dir / f"{run_output_stem}_freshNews.newsreader.json"
     daily_sidecar_path = out_dir / f"dailyFreshNews_{date_text}.newsreader.json"
     if run_fresh_path.exists():
         raise incremental_error(
@@ -1911,23 +1919,13 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         merged_section_order,
         run_fresh_items_final,
         current_run_errors,
+        section_metadata,
     )
     daily_fresh_markdown = build_markdown(
         merged_section_order,
         daily_fresh_items_final,
         daily_errors,
-    )
-    run_sidecar_payload = build_newsreader_sidecar(
-        schema_version="newsreader.daily.v1",
-        date_text=date_text,
-        timezone_name=timezone_name,
-        generated_at=generated_at,
-        source_markdown=run_fresh_path,
-        run_id=run_id,
-        items_raw=run_fresh_items_raw,
-        items_final=run_fresh_items_final,
-        translations=translations,
-        errors=current_run_errors,
+        section_metadata,
     )
     daily_sidecar_payload = build_newsreader_sidecar(
         schema_version="newsreader.daily.v1",
@@ -1940,14 +1938,11 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         items_final=daily_fresh_items_final,
         translations=translations,
         errors=daily_errors,
+        section_metadata=section_metadata,
     )
     try:
         write_text_new_file(run_fresh_path, run_fresh_markdown)
         write_text_atomic(daily_fresh_path, daily_fresh_markdown)
-        write_text_new_file(
-            run_sidecar_path,
-            json.dumps(run_sidecar_payload, ensure_ascii=False, indent=2) + "\n",
-        )
         write_text_atomic(
             daily_sidecar_path,
             json.dumps(daily_sidecar_payload, ensure_ascii=False, indent=2) + "\n",
@@ -1974,7 +1969,6 @@ def finalize_incremental(args: argparse.Namespace) -> int:
             "translated_json_path": str(translated_json_path),
             "run_fresh_path": str(run_fresh_path),
             "daily_fresh_path": str(daily_fresh_path),
-            "run_sidecar_path": str(run_sidecar_path),
             "daily_sidecar_path": str(daily_sidecar_path),
             "run_fresh_count": len(run_fresh_items_final),
             "daily_fresh_count": len(daily_fresh_items_final),
@@ -2008,7 +2002,6 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         "run_artifact_dir": str(incremental_run_dir),
         "run_fresh_path": str(run_fresh_path),
         "daily_fresh_path": str(daily_fresh_path),
-        "run_sidecar_path": str(run_sidecar_path),
         "daily_sidecar_path": str(daily_sidecar_path),
         "state_path": str(today_state_path),
         "stats": {
