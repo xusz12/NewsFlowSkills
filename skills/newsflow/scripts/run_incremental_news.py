@@ -52,7 +52,6 @@ PREPARE_RECOVERABLE_ERROR_CODES = frozenset(
     {
         "PREPARE_STALE_CURRENT_JSON",
         "PREPARE_RUN_ID_ALREADY_FINALIZED",
-        "PREPARE_GENERATED_AT_ALREADY_FINALIZED",
         "PREPARE_CURRENT_JSON_UNREADABLE",
     }
 )
@@ -64,6 +63,7 @@ FINALIZE_RECOVERABLE_ERROR_CODES = frozenset(
 VALID_TRANSLATION_POLICIES = {"always", "auto", "never"}
 TRANSLATION_BATCH_SIZE = 8
 LONG_TWITTER_TRANSLATION_CHARS = 1000
+RUN_OUTPUT_STEM_HASH_LENGTH = 12
 TRANSLATION_OUTPUT_FIELDS = frozenset(
     {"title", "quoted_text", "quoted_text_zh", "summary", "summary_zh"}
 )
@@ -93,6 +93,15 @@ def is_recoverable_finalize_error_code(code: str) -> bool:
 
 def format_timestamp(dt: datetime) -> str:
     return dt.strftime(TIMESTAMP_FORMAT)
+
+
+def make_run_output_stem(generated_at: datetime, run_id: str) -> str:
+    """Derive a readable, deterministic and collision-resistant output stem."""
+    digest_input = f"{format_timestamp(generated_at)}\0{str(run_id).strip()}".encode(
+        "utf-8"
+    )
+    digest = hashlib.sha256(digest_input).hexdigest()[:RUN_OUTPUT_STEM_HASH_LENGTH]
+    return f"{generated_at.strftime('%Y-%m-%d-%H-%M-%S')}-{digest}"
 
 
 def parse_timestamp(text: str, *, field_name: str) -> datetime:
@@ -610,11 +619,37 @@ def has_chinese_translated_title(translated: dict[str, str]) -> bool:
 
 
 def has_chinese_translated_quote(translated: dict[str, str]) -> bool:
+    _text, status, _warning = translated_quote_resolution(translated)
+    return status == "ok"
+
+
+def translated_quote_resolution(
+    translated: dict[str, str],
+) -> tuple[str, str, str]:
+    """Return (canonical text, status, warning) for the two quote keys.
+
+    `quoted_text_zh` is the canonical key. `quoted_text` remains a legacy
+    compatibility key and is only used when the canonical key is absent.
+    """
     quoted_text_zh = str(translated.get("quoted_text_zh", "")).strip()
     quoted_text = str(translated.get("quoted_text", "")).strip()
-    if quoted_text_zh and contains_cjk(quoted_text_zh):
-        return True
-    return bool(quoted_text) and contains_cjk(quoted_text)
+    canonical = quoted_text_zh or quoted_text
+    if not canonical:
+        return "", "missing", ""
+    if (
+        quoted_text_zh
+        and quoted_text
+        and contains_cjk(quoted_text_zh)
+        and contains_cjk(quoted_text)
+        and quoted_text_zh != quoted_text
+    ):
+        return quoted_text_zh, "conflict", ""
+    if not contains_cjk(canonical):
+        return canonical, "non_chinese", ""
+    warning = ""
+    if quoted_text_zh and quoted_text and quoted_text_zh != quoted_text:
+        warning = "legacy_key_ignored"
+    return canonical, "ok", warning
 
 
 def has_chinese_translated_summary(translated: dict[str, str]) -> bool:
@@ -656,7 +691,7 @@ def required_translation_fields(
     quoted_raw = str(item.get("quoted_text_raw", "")).strip()
     if quoted_raw and translation_required_for_text(policy, quoted_raw):
         if not has_chinese_translated_quote(current):
-            required.append("quoted_text")
+            required.append("quoted_text_zh")
 
     summary = str(item.get("summary", "")).strip()
     if (
@@ -1044,6 +1079,7 @@ def validate_translations(args: argparse.Namespace) -> int:
     ]
 
     issues: list[dict[str, str]] = []
+    validation_warnings: list[dict[str, str]] = []
     for item in items_to_translate:
         url = item["url"]
         policy = normalize_translation_policy(item.get("translation_policy", "auto"))
@@ -1084,10 +1120,10 @@ def validate_translations(args: argparse.Namespace) -> int:
 
         quoted_raw = str(item.get("quoted_text_raw", "")).strip()
         if quoted_raw and translation_required_for_text(policy, quoted_raw):
-            if not (
-                str(translated.get("quoted_text", "")).strip()
-                or str(translated.get("quoted_text_zh", "")).strip()
-            ):
+            _quoted_text, quote_status, quote_warning = translated_quote_resolution(
+                translated
+            )
+            if quote_status == "missing":
                 issues.append(
                     issue_for_item(
                         item=item,
@@ -1096,12 +1132,30 @@ def validate_translations(args: argparse.Namespace) -> int:
                         source_text=quoted_raw,
                     )
                 )
-            elif not has_chinese_translated_quote(translated):
+            elif quote_status == "conflict":
+                issues.append(
+                    issue_for_item(
+                        item=item,
+                        field="quoted_text",
+                        reason="conflicting_translation_fields",
+                        source_text=quoted_raw,
+                    )
+                )
+            elif quote_status == "non_chinese":
                 issues.append(
                     issue_for_item(
                         item=item,
                         field="quoted_text",
                         reason="non_chinese_translation",
+                        source_text=quoted_raw,
+                    )
+                )
+            if quote_warning:
+                validation_warnings.append(
+                    issue_for_item(
+                        item=item,
+                        field="quoted_text",
+                        reason=quote_warning,
                         source_text=quoted_raw,
                     )
                 )
@@ -1165,6 +1219,8 @@ def validate_translations(args: argparse.Namespace) -> int:
             "incremental_sha256": file_sha256(incremental_json_path),
             "translated_sha256": file_sha256(translated_json_path),
             **result,
+            "warning_count": len(validation_warnings),
+            "warnings": validation_warnings,
         }
         if evidence is not None:
             receipt[phase]["evidence"] = evidence
@@ -1265,15 +1321,10 @@ def finalize_item(item: dict[str, str], translations: dict[str, dict[str, str]])
     title = str(translated.get("title", "")).strip() or item["raw_title"]
     summary = final_summary_for(item, translations)
     quoted_text_raw = str(item.get("quoted_text_raw", item.get("quoted_text", ""))).strip()
-    quoted_text_direct = str(translated.get("quoted_text", "")).strip()
-    quoted_text_zh = str(translated.get("quoted_text_zh", "")).strip()
-
-    if quoted_text_direct:
-        quoted_text = quoted_text_direct
-    elif quoted_text_zh:
-        quoted_text = quoted_text_zh
-    else:
-        quoted_text = quoted_text_raw
+    translated_quote, _quote_status, _quote_warning = translated_quote_resolution(
+        translated
+    )
+    quoted_text = translated_quote or quoted_text_raw
 
     result = {
         "section": item["section"],
@@ -1367,6 +1418,9 @@ def build_newsreader_sidecar(
         if final_item is None:
             continue
         translated = translations.get(raw_item["url"], {})
+        translated_quote, _quote_status, _quote_warning = translated_quote_resolution(
+            translated
+        )
         source_type, source_name = infer_source_metadata(raw_item)
         raw_summary = str(raw_item.get("summary", "")).strip()
         quoted_text_raw = str(
@@ -1386,10 +1440,7 @@ def build_newsreader_sidecar(
             "url": raw_item["url"],
             "canonical_url": canonicalize_item_url(raw_item["url"], source_type),
             "quoted_text": str(final_item.get("quoted_text", "")).strip(),
-            "quoted_text_zh": (
-                str(translated.get("quoted_text_zh", "")).strip()
-                or str(translated.get("quoted_text", "")).strip()
-            ),
+            "quoted_text_zh": translated_quote,
             "provenance": {
                 "translation_policy": normalize_translation_policy(
                     raw_item.get("translation_policy", "auto")
@@ -1483,6 +1534,7 @@ def prepare_incremental(args: argparse.Namespace) -> int:
     run_dt = run_meta["generated_at"]
     timezone_name = run_meta["timezone_name"]
     date_text = run_dt.strftime("%Y-%m-%d")
+    run_output_stem = make_run_output_stem(run_dt, run_meta["run_id"])
     run_file_timestamp = run_dt.strftime("%Y-%m-%d-%H-%M")
     yesterday_text = (run_dt - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -1533,26 +1585,19 @@ def prepare_incremental(args: argparse.Namespace) -> int:
             ).replace(tzinfo=run_meta["timezone"])
         except ValueError as exc:
             raise incremental_error("PREPARE_BAD_STATE", str(exc)) from exc
-        if run_meta["generated_at"] <= latest_generated_at:
+        if run_meta["generated_at"] < latest_generated_at:
             raise incremental_error(
                 "PREPARE_STALE_CURRENT_JSON",
-                "current-json is not newer than the latest finalized run: "
-                f"{run_meta['generated_at_text']} <= {latest_generated_at_text}"
+                "current-json is older than the latest finalized run: "
+                f"{run_meta['generated_at_text']} < {latest_generated_at_text}"
             )
 
     for entry in today_state["runs"]:
         existing_run_id = str(entry.get("run_id", "")).strip()
-        existing_generated_at = str(entry.get("generated_at", "")).strip()
         if existing_run_id and existing_run_id == run_meta["run_id"]:
             raise incremental_error(
                 "PREPARE_RUN_ID_ALREADY_FINALIZED",
                 f"run_id already finalized for today: {run_meta['run_id']}"
-            )
-        if existing_generated_at == run_meta["generated_at_text"]:
-            raise incremental_error(
-                "PREPARE_GENERATED_AT_ALREADY_FINALIZED",
-                "generated_at already finalized for today: "
-                f"{run_meta['generated_at_text']}"
             )
 
     merged_section_order = merge_section_order(today_state["section_order"], current_section_order)
@@ -1587,6 +1632,7 @@ def prepare_incremental(args: argparse.Namespace) -> int:
         "generated_at": run_meta["generated_at_text"],
         "timezone": timezone_name,
         "section_order": merged_section_order,
+        "run_output_stem": run_output_stem,
         "run_file_timestamp": run_file_timestamp,
         "current_run_items_raw": current_items,
         "current_run_first_seen_items_raw": current_run_first_seen_items_raw,
@@ -1697,24 +1743,17 @@ def finalize_incremental(args: argparse.Namespace) -> int:
     timezone_name = run_meta["timezone_name"]
     generated_at = run_meta["generated_at_text"]
     run_id = run_meta["run_id"]
-    run_file_timestamp = str(
-        raw_payload.get(
-            "run_file_timestamp",
-            run_meta["generated_at"].strftime("%Y-%m-%d-%H-%M"),
-        )
-    ).strip()
-    if not run_file_timestamp:
+    expected_run_output_stem = make_run_output_stem(
+        run_meta["generated_at"], run_id
+    )
+    stored_run_output_stem = str(raw_payload.get("run_output_stem", "")).strip()
+    if stored_run_output_stem and stored_run_output_stem != expected_run_output_stem:
         raise incremental_error(
             "FINALIZE_BAD_INCREMENTAL_METADATA",
-            "incremental-json is missing run_file_timestamp",
+            "incremental-json run_output_stem does not match immutable run metadata: "
+            f"{stored_run_output_stem} != {expected_run_output_stem}"
         )
-    expected_run_file_timestamp = run_meta["generated_at"].strftime("%Y-%m-%d-%H-%M")
-    if run_file_timestamp != expected_run_file_timestamp:
-        raise incremental_error(
-            "FINALIZE_BAD_INCREMENTAL_METADATA",
-            "incremental-json run_file_timestamp does not match generated_at: "
-            f"{run_file_timestamp} != {expected_run_file_timestamp}"
-        )
+    run_output_stem = expected_run_output_stem
 
     paths_payload = raw_payload.get("paths", {})
     if not isinstance(paths_payload, dict):
@@ -1776,16 +1815,10 @@ def finalize_incremental(args: argparse.Namespace) -> int:
 
     for entry in today_state["runs"]:
         existing_run_id = str(entry.get("run_id", "")).strip()
-        existing_generated_at = str(entry.get("generated_at", "")).strip()
         if existing_run_id and existing_run_id == run_id:
             raise incremental_error(
                 "FINALIZE_RUN_ALREADY_FINALIZED",
                 f"Run already finalized for run_id: {run_id}",
-            )
-        if existing_generated_at == generated_at:
-            raise incremental_error(
-                "FINALIZE_RUN_ALREADY_FINALIZED",
-                f"Run already finalized for generated_at: {generated_at}",
             )
 
     merged_section_order = merge_section_order(
@@ -1864,9 +1897,9 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         raise incremental_error("FINALIZE_WRITE_FAILED", str(exc)) from exc
-    run_fresh_path = out_dir / f"{run_file_timestamp}_freshNews.md"
+    run_fresh_path = out_dir / f"{run_output_stem}_freshNews.md"
     daily_fresh_path = out_dir / f"dailyFreshNews_{date_text}.md"
-    run_sidecar_path = out_dir / f"{run_file_timestamp}_freshNews.newsreader.json"
+    run_sidecar_path = out_dir / f"{run_output_stem}_freshNews.newsreader.json"
     daily_sidecar_path = out_dir / f"dailyFreshNews_{date_text}.newsreader.json"
     if run_fresh_path.exists():
         raise incremental_error(
@@ -1929,6 +1962,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
     runs.append(
         {
             "run_id": run_id,
+            "run_output_stem": run_output_stem,
             "started_at": run_meta["started_at_text"],
             "finished_at": run_meta["finished_at_text"],
             "generated_at": generated_at,
@@ -1965,6 +1999,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
     result = {
         "date": date_text,
         "run_id": run_id,
+        "run_output_stem": run_output_stem,
         "started_at": run_meta["started_at_text"],
         "finished_at": run_meta["finished_at_text"],
         "generated_at": generated_at,

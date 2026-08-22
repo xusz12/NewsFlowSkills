@@ -2,18 +2,21 @@
 import argparse
 import json
 import os
+import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
 
-DEFAULT_TARGET_ROOT = Path(
-    os.environ.get(
-        "NEWSFLOW_EXPORT_ROOT",
-        "/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews",
-    )
+LEGACY_DEFAULT_TARGET_ROOT = Path(
+    "/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews"
 )
 SIDECAR_SUFFIX = ".newsreader.json"
+FRESH_FILENAME_RE = re.compile(
+    r"^(?P<year>\d{4})-(?P<month>\d{2})-\d{2}-\d{2}-\d{2}"
+    r"(?:-\d{2}-[0-9a-f]{12})?_freshNews\.md$"
+)
 
 
 def parse_daily_date(path: Path) -> tuple[int, int]:
@@ -34,19 +37,21 @@ def parse_daily_date(path: Path) -> tuple[int, int]:
 
 
 def parse_fresh_date(path: Path) -> tuple[int, int]:
-    # YYYY-MM-DD-HH-mm_freshNews.md
-    name = path.name
-    suffix = "_freshNews.md"
-    if not name.endswith(suffix):
+    # Legacy: YYYY-MM-DD-HH-mm_freshNews.md
+    # Current: YYYY-MM-DD-HH-mm-ss-<12 hex>_freshNews.md
+    match = FRESH_FILENAME_RE.fullmatch(path.name)
+    if match is None:
         raise ValueError("invalid_fresh_filename")
-    stem = name[: -len(suffix)]
-    parts = stem.split("-")
-    if len(parts) != 5:
-        raise ValueError("invalid_fresh_filename")
-    year, month, _day, _hour, _minute = parts
-    if len(year) != 4 or len(month) != 2:
-        raise ValueError("invalid_fresh_filename")
-    return int(year), int(month)
+    return int(match.group("year")), int(match.group("month"))
+
+
+def resolve_target_root(cli_target_root: str | None) -> tuple[Path, bool]:
+    if cli_target_root:
+        return Path(cli_target_root).expanduser().resolve(), False
+    env_target_root = os.environ.get("NEWSFLOW_EXPORT_ROOT", "").strip()
+    if env_target_root:
+        return Path(env_target_root).expanduser().resolve(), False
+    return LEGACY_DEFAULT_TARGET_ROOT.expanduser().resolve(), True
 
 
 def check_root_exists(target_root: Path) -> None:
@@ -107,12 +112,26 @@ def main() -> int:
         description="Export newsflow daily/fresh outputs into month-based DailyNews folders."
     )
     parser.add_argument("--daily", required=True, help="Path to dailyFreshNews_YYYY-MM-DD.md")
-    parser.add_argument("--fresh", required=True, help="Path to YYYY-MM-DD-HH-mm_freshNews.md")
+    parser.add_argument(
+        "--fresh",
+        required=True,
+        help="Path to a legacy or current per-run *_freshNews.md",
+    )
+    parser.add_argument(
+        "--target-root",
+        help="Export root (overrides NEWSFLOW_EXPORT_ROOT and the legacy default)",
+    )
     args = parser.parse_args()
 
     daily_path = Path(args.daily).expanduser().resolve()
     fresh_path = Path(args.fresh).expanduser().resolve()
-    target_root = DEFAULT_TARGET_ROOT
+    target_root, used_legacy_default = resolve_target_root(args.target_root)
+    if used_legacy_default:
+        print(
+            "warning: using the legacy personal export root; pass --target-root "
+            "or set NEWSFLOW_EXPORT_ROOT",
+            file=sys.stderr,
+        )
 
     if not daily_path.exists():
         print(

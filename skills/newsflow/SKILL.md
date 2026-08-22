@@ -58,7 +58,6 @@ Recoverable prepare codes:
 
 - `PREPARE_STALE_CURRENT_JSON`: the current payload is older than the latest finalized run.
 - `PREPARE_RUN_ID_ALREADY_FINALIZED`: the run id has already been finalized today.
-- `PREPARE_GENERATED_AT_ALREADY_FINALIZED`: the generated timestamp has already been finalized today.
 - `PREPARE_CURRENT_JSON_UNREADABLE`: the current run artifact is missing or not valid JSON.
 
 Non-recoverable prepare codes:
@@ -75,6 +74,7 @@ Non-recoverable prepare codes:
    - `current_run_errors`: errors and recovered degradations from this run. When a primary command fails but a retry or fallback succeeds, the pipeline may still emit an `已恢复：...` entry here so downstream reports can surface source health issues.
    - `daily_errors`: accumulated errors and recovered degradations for the current day.
    - `run_id` / `started_at` / `finished_at`: immutable run identity fields. Downstream steps must preserve them exactly.
+   - `run_output_stem`: deterministic `YYYY-MM-DD-HH-mm-ss-<sha256前12位>` stem derived from `generated_at + run_id`; use it for per-run output names.
    - `state_snapshot`: the latest finalized daily state seen during `prepare`. `finalize` will reject stale snapshots.
 8. Translate display text into Chinese in-model:
    - Create the initial deterministic plan. The script derives required fields, keeps the existing `auto` rule that any CJK title (including mixed-language) does not need title translation, while still planning an English quote or Bloomberg summary when required.
@@ -146,15 +146,15 @@ python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" finalize --incremental-js
 Optional export step (post-finalize):
 
 ```bash
-python3 "<SKILL_ROOT>/scripts/export_outputs.py" --daily "<daily_fresh_path>" --fresh "<run_fresh_path>"
+python3 "<SKILL_ROOT>/scripts/export_outputs.py" --daily "<daily_fresh_path>" --fresh "<run_fresh_path>" --target-root "<export_root>"
 ```
 
 Export rules:
-- Default root directory is fixed to:
-  - `/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`
+- Export root precedence is: `--target-root` CLI argument, `NEWSFLOW_EXPORT_ROOT`, then the legacy personal default `/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`.
+- When the legacy default is used, the command prints a compatibility warning to stderr; pass an explicit root for portable use.
 - If the root directory does not exist, export fails with explicit error and root path.
 - Month subdirectory is auto-created as `YYYY年M月`, parsed from filenames.
-- `dailyFreshNews_YYYY-MM-DD.md` and `YYYY-MM-DD-HH-mm_freshNews.md` must resolve to the same year-month.
+- `dailyFreshNews_YYYY-MM-DD.md` and either legacy `YYYY-MM-DD-HH-mm_freshNews.md` or current `YYYY-MM-DD-HH-mm-ss-<12hex>_freshNews.md` must resolve to the same year-month.
 - Export overwrites same-name files by default.
 - Export failure never rolls back finalized local outputs.
 
@@ -186,12 +186,12 @@ Non-recoverable finalize codes:
 
 10. Finalize writes exactly two user-facing Markdown files:
    - `dailyFreshNews_YYYY-MM-DD.md`: one rolling summary file per day.
-   - `YYYY-MM-DD-HH-mm_freshNews.md`: one per-run fresh-news file.
+   - `YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.md`: one collision-resistant per-run fresh-news file.
    - Timezone: `Asia/Shanghai` unless user explicitly requests another timezone.
 11. Hidden state is stored separately in the state directory, one JSON file per day.
 12. Safety rules:
    - `prepare` and `finalize` now require run artifacts to live under `<STATE_DIR>/runs/<run-dir>/`.
-   - `finalize` never overwrites an existing `YYYY-MM-DD-HH-mm_freshNews.md`.
+   - `finalize` never overwrites an existing per-run fresh-news file; legacy incremental artifacts without `run_output_stem` are finalized with the newly derived stem.
    - If `prepare` sees a `current.json` older than the latest finalized run, it fails instead of returning a misleading `0 条新增`.
    - Recoverable `prepare` failures may trigger one clean retry from a new run directory; non-recoverable failures must remain hard stops.
    - If state changes after `prepare`, rerun `prepare` from the same `current.json`; do not force `finalize` and do not automatically rerun pipeline.
@@ -294,7 +294,8 @@ Constraints:
   - URL auto-generated as `https://x.com/{screenName}/status/{id}?s=20`.
   - `createdAtLocal` -> 发布时间.
   - `quotedTweet.text` renders as blockquote.
-  - The translation map must keep the same split: main tweet translation in `title`, quoted tweet translation in `quoted_text` / `quoted_text_zh`.
+  - The translation map must keep the same split: main tweet translation in `title`, quoted tweet translation in canonical `quoted_text_zh`.
+  - `quoted_text` is accepted for legacy artifacts only when `quoted_text_zh` is absent. If both keys are present, the canonical key wins; distinct Chinese values are a validation conflict.
   - Long Twitter posts should be translated in full; do not collapse them into a short summary sentence.
   - If `quoted_text_zh` is provided, only Chinese quote text is rendered (no bilingual block).
   - Recommended translation policy: only translate non-Chinese text.
@@ -315,5 +316,5 @@ Constraints:
 3. Duplicate URLs are removed globally, keeping first occurrence.
 4. Translation is model-handled, not external translation API.
 5. Non-empty sections include display names and summary blockquotes; empty sections are grouped under `本次无更新的分组`.
-6. Finalize writes `dailyFreshNews_YYYY-MM-DD.md` and `YYYY-MM-DD-HH-mm_freshNews.md`, not `*_fullNews.md`.
+6. Finalize writes `dailyFreshNews_YYYY-MM-DD.md` and `YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.md`, not `*_fullNews.md`.
 7. Reusing stale pipeline JSON or attempting to overwrite an existing run file must fail loudly.

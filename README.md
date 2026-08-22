@@ -37,8 +37,8 @@ finalize 成功后，workspace 中会出现：
 <workdir>/
 ├── dailyFreshNews_YYYY-MM-DD.md
 ├── dailyFreshNews_YYYY-MM-DD.newsreader.json
-├── YYYY-MM-DD-HH-mm_freshNews.md
-├── YYYY-MM-DD-HH-mm_freshNews.newsreader.json
+├── YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.md
+├── YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json
 └── .news_state/
     ├── YYYY-MM-DD.json
     └── runs/<run-dir>/
@@ -49,10 +49,10 @@ finalize 成功后，workspace 中会出现：
 ```
 
 - `dailyFreshNews_YYYY-MM-DD.md` 是当日 rolling 累计文件。
-- `YYYY-MM-DD-HH-mm_freshNews.md` 只包含本轮新增内容。
+- `YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.md` 只包含本轮新增内容；export 同时兼容旧版分钟级文件名。
 - 两个 `.newsreader.json` sidecar 为同批新闻提供结构化字段。
 - `.news_state/`、run artifacts 与翻译验证记录属于隐藏运行状态，不是用户简报。
-- 本地 finalize 与可选 DailyNews export 相互独立；export 复制 Markdown 与 sidecar，不改变本地状态。
+- 本地 finalize 与可选 DailyNews export 相互独立；export 复制 Markdown 与 sidecar，不改变本地状态。导出根目录优先级为 `--target-root` > `NEWSFLOW_EXPORT_ROOT` > 旧个人默认路径，使用旧默认时会输出兼容性警告。
 
 ## 工作流概览
 
@@ -79,7 +79,7 @@ finalize 成功后，workspace 中会出现：
 2. 在该 workspace 中让 agent 使用 `$newsflow` 运行默认配置，或同时提供自定义 config 路径。
 3. 首次使用或验证新配置时，先在隔离 workspace 运行，确认来源命令、fresh/daily 产物与状态符合预期，再迁移到目标 workspace。
 
-业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。`v1.1.0` 当前仍是本地候选版本，远端发布前不要把主分支安装结果表述为已验证的 v1.1.0。
+业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。`v1.1.3` 当前仍是本地候选版本，远端发布前不要把主分支安装结果表述为已验证的 v1.1.3。
 
 ## 仓库结构
 

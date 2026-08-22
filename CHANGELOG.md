@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.3（待发布）— 稳定 per-run 输出与可移植导出
+
+- per-run 文件名改为 `YYYY-MM-DD-HH-mm-ss-<sha256前12位>`，由不可变 `generated_at + run_id` 确定，避免同分钟或同秒运行互相覆盖。
+- 统一 `quoted_text_zh` 为引用文本 canonical 字段；旧 `quoted_text` 仅作兼容回退，冲突值会被验证拦截并要求修复。
+- export 新增 `--target-root`，并支持 `NEWSFLOW_EXPORT_ROOT`；CLI、环境变量、旧个人默认路径按优先级解析，同时兼容旧分钟级文件名。
+
 ## v1.1.2（待发布）— 分离 X 采集入口与内容作者
 
 - 每个 Twitter command 显式声明 `source_type`、`source_handle` 与 `source_name`，并将采集账号身份贯穿到 normalized item 和 newsreader sidecar。

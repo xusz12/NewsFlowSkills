@@ -106,7 +106,9 @@ def test_readme_documents_project_lifecycle() -> None:
     assert "让 agent 使用 `$newsflow`" in content
     assert "当前仍是本地候选版本" in content
     assert "dailyFreshNews_YYYY-MM-DD.newsreader.json" in content
-    assert "YYYY-MM-DD-HH-mm_freshNews.newsreader.json" in content
+    assert "YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json" in content
+    assert "--target-root" in content
+    assert "NEWSFLOW_EXPORT_ROOT" in content
     for agent in ("codex", "claude-code", "kimi-code-cli", "pi"):
         assert (
             "npx -y skills add xusz12/NewsFlowSkills "

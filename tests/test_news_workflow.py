@@ -87,6 +87,19 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
+    def expected_run_stem(
+        self, run_id: str, generated_at: str = "2026-04-09 12:05:00"
+    ) -> str:
+        module = load_incremental_module()
+        parsed = module.parse_timestamp(generated_at, field_name="generated_at")
+        return module.make_run_output_stem(parsed, run_id)
+
+    def run_markdown_path(self, run_id: str) -> Path:
+        return self.out_dir / f"{self.expected_run_stem(run_id)}_freshNews.md"
+
+    def run_sidecar_path(self, run_id: str) -> Path:
+        return self.out_dir / f"{self.expected_run_stem(run_id)}_freshNews.newsreader.json"
+
     def make_current_payload(
         self,
         *,
@@ -560,7 +573,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("not newer than the latest finalized run", result.stderr)
+        self.assertIn("older than the latest finalized run", result.stderr)
         self.assertIn("[PREPARE_STALE_CURRENT_JSON]", result.stderr)
 
     def test_prepare_marks_duplicate_run_id_with_error_code(self) -> None:
@@ -606,7 +619,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("[PREPARE_RUN_ID_ALREADY_FINALIZED]", result.stderr)
 
-    def test_prepare_marks_duplicate_generated_at_with_error_code(self) -> None:
+    def test_prepare_allows_distinct_run_id_at_same_generated_at(self) -> None:
         run_dir = self.make_run_dir("duplicate-generated-at")
         current_json = run_dir / "current.json"
         incremental_json = run_dir / "incremental.json"
@@ -655,8 +668,12 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             str(incremental_json),
         )
 
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("[PREPARE_GENERATED_AT_ALREADY_FINALIZED]", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prepared = read_json(incremental_json)
+        self.assertEqual(
+            prepared["run_output_stem"],
+            self.expected_run_stem("new-run"),
+        )
 
     def test_prepare_marks_unreadable_current_json_with_error_code(self) -> None:
         run_dir = self.make_run_dir("missing-current-json")
@@ -759,7 +776,6 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         recoverable_codes = [
             "PREPARE_STALE_CURRENT_JSON",
             "PREPARE_RUN_ID_ALREADY_FINALIZED",
-            "PREPARE_GENERATED_AT_ALREADY_FINALIZED",
             "PREPARE_CURRENT_JSON_UNREADABLE",
         ]
         non_recoverable_codes = [
@@ -780,7 +796,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         incremental_json = run_dir / "incremental.json"
         translated_json = run_dir / "translated.json"
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        existing_run_file = self.out_dir / "2026-04-09-12-05_freshNews.md"
+        existing_run_file = self.run_markdown_path("finalize-run")
         existing_run_file.write_text("existing\n", encoding="utf-8")
         write_json(self.today_state_path, make_state_payload(runs=[]))
         write_json(
@@ -845,7 +861,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         daily_path = self.out_dir / "dailyFreshNews_2026-04-09.md"
         old_daily_path = self.out_dir / "2026-04-09_dailyFreshNews.md"
-        run_path = self.out_dir / "2026-04-09-12-05_freshNews.md"
+        run_path = self.run_markdown_path("new-daily-name")
         state_payload = read_json(self.today_state_path)
 
         self.assertTrue(daily_path.exists())
@@ -938,7 +954,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         payload_out = json.loads(result.stdout)
-        run_sidecar = read_json(self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json")
+        run_sidecar = read_json(self.run_sidecar_path("newsreader-sidecar"))
         daily_sidecar = read_json(self.out_dir / "dailyFreshNews_2026-04-09.newsreader.json")
         state_payload = read_json(self.today_state_path)
 
@@ -948,7 +964,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(daily_sidecar["schema_version"], "newsreader.daily.v1")
         self.assertEqual(
             Path(run_sidecar["source_markdown"]).resolve(),
-            (self.out_dir / "2026-04-09-12-05_freshNews.md").resolve(),
+            self.run_markdown_path("newsreader-sidecar").resolve(),
         )
         self.assertEqual(
             Path(daily_sidecar["source_markdown"]).resolve(),
@@ -960,7 +976,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
         self.assertEqual(
             Path(state_payload["runs"][0]["run_sidecar_path"]).resolve(),
-            (self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json").resolve(),
+            self.run_sidecar_path("newsreader-sidecar").resolve(),
         )
 
         items = run_sidecar["items"]
@@ -1064,7 +1080,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         sidecar = read_json(
-            self.out_dir / "2026-04-09-12-05_freshNews.newsreader.json"
+            self.run_sidecar_path("twitter-collector-contract")
         )
         self.assertEqual(len(sidecar["items"]), 4)
         for index, (sidecar_item, (kind, author_handle, author_name)) in enumerate(
@@ -1300,7 +1316,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(encoding="utf-8")
+        run_markdown = self.run_markdown_path("chinese-title-translation").read_text(encoding="utf-8")
         self.assertNotIn("title 未翻译", run_markdown)
         self.assertNotIn("title 翻译看起来仍非中文", run_markdown)
 
@@ -1422,7 +1438,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
+        run_markdown = self.run_markdown_path("twitter-title-quote-split").read_text(
             encoding="utf-8"
         )
         self.assertIn("### [主推文完整中文翻译]", run_markdown)
@@ -1468,7 +1484,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        run_markdown = (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(
+        run_markdown = self.run_markdown_path("already-chinese-text").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("title 未翻译", run_markdown)
@@ -1633,6 +1649,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("--daily", result.stdout)
         self.assertIn("--fresh", result.stdout)
+        self.assertIn("--target-root", result.stdout)
 
     def test_export_filename_parsing(self) -> None:
         spec = importlib.util.spec_from_file_location("export_outputs", EXPORT_SCRIPT)
@@ -1644,6 +1661,10 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         year, month = module.parse_daily_date(Path("dailyFreshNews_2026-03-31.md"))
         self.assertEqual((year, month), (2026, 3))
         year, month = module.parse_fresh_date(Path("2026-03-31-18-27_freshNews.md"))
+        self.assertEqual((year, month), (2026, 3))
+        year, month = module.parse_fresh_date(
+            Path("2026-03-31-18-27-44-a1b2c3d4e5f6_freshNews.md")
+        )
         self.assertEqual((year, month), (2026, 3))
 
         with self.assertRaises(ValueError):
@@ -1693,6 +1714,59 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertTrue((month_dir / fresh_path.name).exists())
         self.assertTrue((month_dir / daily_sidecar.name).exists())
         self.assertTrue((month_dir / fresh_sidecar.name).exists())
+
+    def test_export_cli_target_root_overrides_environment(self) -> None:
+        source_dir = self.root / "out"
+        env_root = self.root / "env-root"
+        cli_root = self.root / "导出 root #1"
+        env_root.mkdir(parents=True, exist_ok=True)
+        cli_root.mkdir(parents=True, exist_ok=True)
+        daily_path = source_dir / "dailyFreshNews_2026-04-09.md"
+        fresh_path = source_dir / "2026-04-09-12-05-44-a1b2c3d4e5f6_freshNews.md"
+        write_text(daily_path, "# daily\n")
+        write_text(fresh_path, "# fresh\n")
+        write_json(daily_path.with_suffix(".newsreader.json"), {"items": []})
+        write_json(fresh_path.with_suffix(".newsreader.json"), {"items": []})
+        env = dict(os.environ)
+        env["NEWSFLOW_EXPORT_ROOT"] = str(env_root)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(EXPORT_SCRIPT),
+                "--daily",
+                str(daily_path),
+                "--fresh",
+                str(fresh_path),
+                "--target-root",
+                str(cli_root),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(cli_root), result.stdout)
+        self.assertTrue((cli_root / "2026年4月" / fresh_path.name).exists())
+        self.assertFalse((env_root / "2026年4月" / fresh_path.name).exists())
+
+    def test_export_legacy_default_emits_compatibility_warning(self) -> None:
+        env = dict(os.environ)
+        env.pop("NEWSFLOW_EXPORT_ROOT", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(EXPORT_SCRIPT),
+                "--daily",
+                str(self.root / "missing-daily.md"),
+                "--fresh",
+                str(self.root / "missing-fresh.md"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("legacy personal export root", result.stderr)
 
     def test_export_fails_when_sidecar_is_missing(self) -> None:
         source_dir = self.root / "out"
@@ -1793,6 +1867,179 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertFalse(data["ok"])
         issue_fields = {issue["field"] for issue in data["issues"]}
         self.assertIn("quoted_text", issue_fields)
+
+    def test_quote_canonical_key_wins_and_legacy_warning_stays_hidden(self) -> None:
+        run_dir = self.make_run_dir("quote-canonical")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "Ilya Sutskever",
+            "translation_policy": "auto",
+            "title": "Original English Title",
+            "raw_title": "Original English Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/canonical?s=20",
+            "quoted_text_raw": "Original quoted tweet text",
+        }
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="quote-canonical",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+            run_fresh_items=[item],
+        )
+        write_json(incremental_json, payload)
+        write_json(
+            translated_json,
+            {
+                item["url"]: {
+                    "title": "中文标题",
+                    "quoted_text_zh": "规范中文引用",
+                    "quoted_text": "Legacy English quote",
+                }
+            },
+        )
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "validate-translations",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = read_json(run_dir / "translation-validation.json")
+        self.assertEqual(receipt["initial"]["warning_count"], 1)
+        self.assertEqual(receipt["initial"]["warnings"][0]["reason"], "legacy_key_ignored")
+
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        finalized = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+            "--state-dir",
+            str(self.state_dir),
+            "--out-dir",
+            str(self.out_dir),
+        )
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        sidecar = read_json(self.run_sidecar_path("quote-canonical"))
+        self.assertEqual(sidecar["items"][0]["quoted_text_zh"], "规范中文引用")
+        self.assertEqual(sidecar["items"][0]["quoted_text"], "规范中文引用")
+
+    def test_quote_distinct_chinese_keys_are_a_validation_conflict(self) -> None:
+        run_dir = self.make_run_dir("quote-conflict")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        item = {
+            "section": "Ilya Sutskever",
+            "translation_policy": "auto",
+            "title": "Original English Title",
+            "raw_title": "Original English Title",
+            "time": "2026-04-09 12:00:00",
+            "url": "https://x.com/example/status/conflict?s=20",
+            "quoted_text_raw": "Original quoted tweet text",
+        }
+        write_json(
+            incremental_json,
+            self.make_incremental_payload(
+                run_dir=run_dir,
+                run_id="quote-conflict",
+                started_at="2026-04-09 12:00:00",
+                finished_at="2026-04-09 12:05:00",
+                run_fresh_items=[item],
+            ),
+        )
+        write_json(
+            translated_json,
+            {
+                item["url"]: {
+                    "title": "中文标题",
+                    "quoted_text_zh": "第一种中文",
+                    "quoted_text": "第二种中文",
+                }
+            },
+        )
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "validate-translations",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertFalse(data["ok"])
+        self.assertIn("conflicting_translation_fields", {issue["reason"] for issue in data["issues"]})
+
+    def test_same_second_runs_get_distinct_output_stems(self) -> None:
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        for index, run_id in enumerate(("same-second-a", "same-second-b")):
+            run_dir = self.make_run_dir(run_id)
+            incremental_json = run_dir / "incremental.json"
+            translated_json = run_dir / "translated.json"
+            payload = self.make_incremental_payload(
+                run_dir=run_dir,
+                run_id=run_id,
+                started_at="2026-04-09 12:00:00",
+                finished_at="2026-04-09 12:05:00",
+            )
+            if index:
+                payload["state_snapshot"] = {
+                    "latest_finalized_run_id": "same-second-a",
+                    "latest_finalized_generated_at": "2026-04-09 12:05:00",
+                }
+            write_json(incremental_json, payload)
+            write_json(translated_json, {})
+            result = self.run_cmd(
+                str(INCREMENTAL_SCRIPT),
+                "finalize",
+                "--incremental-json",
+                str(incremental_json),
+                "--translated-json",
+                str(translated_json),
+                "--state-dir",
+                str(self.state_dir),
+                "--out-dir",
+                str(self.out_dir),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(self.expected_run_stem("same-second-a"), self.expected_run_stem("same-second-b"))
+        self.assertTrue(self.run_markdown_path("same-second-a").exists())
+        self.assertTrue(self.run_markdown_path("same-second-b").exists())
+
+    def test_finalize_rejects_tampered_run_output_stem(self) -> None:
+        run_dir = self.make_run_dir("tampered-stem")
+        incremental_json = run_dir / "incremental.json"
+        translated_json = run_dir / "translated.json"
+        payload = self.make_incremental_payload(
+            run_dir=run_dir,
+            run_id="tampered-stem",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+        )
+        payload["run_output_stem"] = "2026-04-09-12-05-00-000000000000"
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        write_json(incremental_json, payload)
+        write_json(translated_json, {})
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json",
+            str(incremental_json),
+            "--translated-json",
+            str(translated_json),
+            "--state-dir",
+            str(self.state_dir),
+            "--out-dir",
+            str(self.out_dir),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[FINALIZE_BAD_INCREMENTAL_METADATA]", result.stderr)
 
     def test_validate_translations_reports_bloomberg_summary_missing(self) -> None:
         run_dir = self.make_run_dir("validate-bloomberg-summary")
@@ -1911,7 +2158,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             item for batch in batches for item in batch["items"]
             if item["url"] == "https://x.com/example/status/cjk?s=20"
         )
-        self.assertEqual(cjk_item["required_fields"], ["quoted_text"])
+        self.assertEqual(cjk_item["required_fields"], ["quoted_text_zh"])
 
     def test_merge_translation_batch_requires_exact_urls_and_is_atomic(self) -> None:
         run_dir = self.make_run_dir("translation-merge")
@@ -2086,7 +2333,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(self.run_cmd(str(INCREMENTAL_SCRIPT), "validate-translations", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json)).returncode, 0)
         allowed = self.run_cmd(str(INCREMENTAL_SCRIPT), "finalize", "--incremental-json", str(incremental_json), "--translated-json", str(translated_json), "--state-dir", str(self.state_dir), "--out-dir", str(self.out_dir))
         self.assertEqual(allowed.returncode, 0, allowed.stderr)
-        self.assertNotIn("翻译", (self.out_dir / "2026-04-09-12-05_freshNews.md").read_text(encoding="utf-8").split("## errors", 1)[1])
+        self.assertNotIn("翻译", self.run_markdown_path("translation-repair-gate").read_text(encoding="utf-8").split("## errors", 1)[1])
 
     def test_reusing_run_directory_does_not_reuse_old_repair_plan(self) -> None:
         run_dir = self.make_run_dir("same-path-recovery")
