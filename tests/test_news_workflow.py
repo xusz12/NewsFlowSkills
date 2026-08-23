@@ -307,6 +307,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             and entry.get("command", [None, None])[:2] == ["opencli", "twitter"]
         ]
         self.assertTrue(twitter_entries, "expected twitter sources in default commands.json")
+        self.assertEqual(len(entries), 19)
+        self.assertEqual(len(twitter_entries), 11)
         handles = [entry["command"][3] for entry in twitter_entries]
         self.assertEqual(len(handles), len(set(handles)), "twitter handles must be unique")
         self.assertEqual(
@@ -317,14 +319,12 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "ivanalog_com",
                 "fxtrader",
                 "Time_HorizonX",
-                "jakevin7",
+                "WaylandZhang",
                 "aleabitoreddit",
                 "LinQingV",
-                "cyrilxuq",
                 "Areskapitalon",
                 "ChinaMacroFacts",
                 "MacroMargin",
-                "HuXijin_GT",
             ],
         )
         expected_names = {
@@ -333,15 +333,30 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "ivanalog_com": "seekinganythingbutalpha",
             "fxtrader": "外汇交易员",
             "Time_HorizonX": "Time Horizon",
-            "jakevin7": "卡比卡比",
+            "WaylandZhang": "WaylandZhang",
             "aleabitoreddit": "Serenity",
             "LinQingV": "Macro_Lin",
-            "cyrilxuq": "徐冲浪",
             "Areskapitalon": "Aelia Capitolina",
             "ChinaMacroFacts": "中国政经事实ChinaFacts",
             "MacroMargin": "宏观边际MacroMargin",
-            "HuXijin_GT": "Hu Xijin 胡锡进",
         }
+        removed_handles = {"jakevin7", "cyrilxuq", "HuXijin_GT"}
+        self.assertTrue(removed_handles.isdisjoint(handles))
+        self.assertTrue(
+            all(
+                removed_handle not in json.dumps(entries, ensure_ascii=False)
+                for removed_handle in removed_handles
+            )
+        )
+        wayland = next(entry for entry in twitter_entries if entry["source_handle"] == "WaylandZhang")
+        self.assertEqual(
+            {key: wayland[key] for key in ("section", "display_name", "source_name")},
+            {
+                "section": "WaylandZhang",
+                "display_name": "WaylandZhang",
+                "source_name": "WaylandZhang",
+            },
+        )
         for entry in twitter_entries:
             handle = entry["command"][3]
             self.assertEqual(entry["command"][2], "tweets")
@@ -562,7 +577,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             if isinstance(entry, dict) and entry.get("source_type") == "twitter"
         ]
 
-        self.assertEqual(len(twitter_entries), 13)
+        self.assertEqual(len(twitter_entries), 11)
         for index, entry in enumerate(twitter_entries, start=1):
             item = {
                 "section": entry["section"],
@@ -585,11 +600,11 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             config_path,
             [
                 {
-                    "section": "卡比卡比",
+                    "section": "WaylandZhang",
                     "translation_policy": "auto",
                     "source_type": "twitter",
-                    "source_handle": "jakevin7",
-                    "source_name": "卡比卡比",
+                    "source_handle": "WaylandZhang",
+                    "source_name": "WaylandZhang",
                     "command": [
                         sys.executable,
                         "-c",
@@ -613,10 +628,23 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        item = read_json(current_json)["deduped_items"][0]
+        payload = read_json(current_json)
+        item = payload["deduped_items"][0]
+        self.assertEqual(
+            payload["section_metadata"],
+            {
+                "WaylandZhang": {
+                    "display_name": "WaylandZhang",
+                    "source_type": "twitter",
+                    "source_name": "WaylandZhang",
+                    "source_handle": "WaylandZhang",
+                    "translation_policy": "auto",
+                }
+            },
+        )
         self.assertEqual(item["source_type"], "twitter")
-        self.assertEqual(item["source_handle"], "jakevin7")
-        self.assertEqual(item["source_name"], "卡比卡比")
+        self.assertEqual(item["source_handle"], "WaylandZhang")
+        self.assertEqual(item["source_name"], "WaylandZhang")
         self.assertEqual(item["author_screen_name"], "external_author")
         self.assertEqual(
             item["url"],
@@ -1202,7 +1230,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         incremental_json = run_dir / "incremental.json"
         translated_json = run_dir / "translated.json"
         cases = [
-            ("original", "jakevin7", "卡比卡比"),
+            ("original", "WaylandZhang", "Wayland Zhang"),
             ("repost", "istdrc", "转发内容作者"),
             ("reply", "wey_gu", "回复内容作者"),
             ("quote", "aiandcloud", "引用内容作者"),
@@ -1210,15 +1238,15 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         twitter_items = []
         for index, (kind, author_handle, author_name) in enumerate(cases, start=1):
             item = {
-                "section": "卡比卡比",
+                "section": "WaylandZhang",
                 "title": f"{kind} 中文内容",
                 "raw_title": f"{kind} 中文内容",
                 "time": f"2026-04-09 12:0{index}:00",
                 "url": f"https://x.com/{author_handle}/status/{index}?s=20",
                 "translation_policy": "auto",
                 "source_type": "twitter",
-                "source_handle": "jakevin7",
-                "source_name": "卡比卡比",
+                "source_handle": "WaylandZhang",
+                "source_name": "WaylandZhang",
                 "author_name": author_name,
                 "author_screen_name": author_handle,
             }
@@ -1233,7 +1261,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             finished_at="2026-04-09 12:05:00",
             run_fresh_items=twitter_items,
         )
-        payload["section_order"] = ["卡比卡比"]
+        payload["section_order"] = ["WaylandZhang"]
         write_json(self.today_state_path, make_state_payload(runs=[]))
         write_json(incremental_json, payload)
         write_json(translated_json, {})
@@ -1260,9 +1288,9 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         ):
             with self.subTest(kind=kind):
                 self.assertEqual(sidecar_item["source_type"], "twitter")
-                self.assertEqual(sidecar_item["source_handle"], "jakevin7")
-                self.assertEqual(sidecar_item["source_name"], "卡比卡比")
-                self.assertEqual(sidecar_item["source"], "卡比卡比")
+                self.assertEqual(sidecar_item["source_handle"], "WaylandZhang")
+                self.assertEqual(sidecar_item["source_name"], "WaylandZhang")
+                self.assertEqual(sidecar_item["source"], "WaylandZhang")
                 self.assertEqual(sidecar_item["author_screen_name"], author_handle)
                 self.assertEqual(sidecar_item["author_name"], author_name)
                 self.assertEqual(

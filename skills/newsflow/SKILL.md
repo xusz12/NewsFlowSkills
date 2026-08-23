@@ -220,6 +220,8 @@ Non-recoverable finalize codes:
 
 ## commands.json Format
 
+The bundled v1.2.2 default config has 19 ordered source entries, including 11 Twitter accounts.
+
 Use JSON array of objects:
 
 ```json

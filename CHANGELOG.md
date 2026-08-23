@@ -1,6 +1,12 @@
 # Changelog
 
-## v1.2.1（待发布）— 来源快照、容量翻译与文本边界
+## v1.2.2（待发布）— 调整 X 来源清单
+
+- 移除 `jakevin7`、`cyrilxuq` 与 `HuXijin_GT`，新增 `WaylandZhang`。
+- 默认配置现有 19 个采集入口，其中 X/Twitter 11 个；新账号沿用 opencli 主路径、native fallback 与 `auto` 翻译策略。
+- 采集、翻译、sidecar、导出与其余来源行为不变。
+
+## v1.2.1（2026-08-22）— 来源快照、容量翻译与文本边界
 
 - 将来源显示名、类型、身份、命令、重试门槛和翻译策略收敛到 `commands.json`；pipeline 生成本轮 `section_metadata` 快照，prepare/finalize 不再依赖可变配置。
 - 翻译计划取消固定 8 URL 和长推文 1000 字符特例，改按必需标题、引用与摘要的源文字总量分批；默认 12,000 字符以内单批，长文本不截断。

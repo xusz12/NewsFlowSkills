@@ -108,6 +108,8 @@ def test_readme_documents_project_lifecycle() -> None:
     assert "export 失败不会回滚" in content
     assert "让 agent 使用 `$newsflow`" in content
     assert "当前仍是本地候选版本" in content
+    assert "`v1.2.2` 默认配置包含 19 个采集入口，其中 X/Twitter 11 个" in content
+    assert "`v1.2.2` 当前仍是本地候选版本" in content
     assert "dailyFreshNews_YYYY-MM-DD.newsreader.json" in content
     assert "YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json" not in content
     assert "per-run freshNews 不生成 sidecar" in content
@@ -136,3 +138,9 @@ def test_readme_documents_project_lifecycle() -> None:
 
 def test_legacy_sync_entrypoint_is_removed() -> None:
     assert not (ROOT / "tools" / "sync_install.sh").exists()
+
+
+def test_skill_documents_v122_default_source_count() -> None:
+    content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    assert "v1.2.2 default config has 19 ordered source entries" in content
+    assert "including 11 Twitter accounts" in content
