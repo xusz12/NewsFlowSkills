@@ -215,7 +215,7 @@ def normalize_item(item: Any) -> dict[str, str] | None:
     return payload
 
 
-def normalize_error(error: Any) -> dict[str, str] | None:
+def normalize_error(error: Any) -> dict[str, Any] | None:
     if not isinstance(error, dict):
         return None
 
@@ -234,7 +234,15 @@ def normalize_error(error: Any) -> dict[str, str] | None:
     }
     if generated_at:
         payload["generated_at"] = generated_at
+    if "recovered" in error:
+        payload["recovered"] = error.get("recovered") is True
     return payload
+
+
+def is_recovered_error(error: dict[str, Any]) -> bool:
+    if "recovered" in error:
+        return error.get("recovered") is True
+    return str(error.get("error", "")).strip().startswith("已恢复：")
 
 
 def extract_run_metadata(payload: dict[str, Any], *, source_label: str) -> dict[str, Any]:
@@ -562,6 +570,7 @@ def build_markdown(
     errors: list[dict[str, str]],
     section_metadata: dict[str, dict[str, str]],
 ) -> str:
+    visible_errors = [error for error in errors if not is_recovered_error(error)]
     sorted_section_order = sort_sections(section_order)
     grouped: dict[str, list[dict[str, str]]] = {section: [] for section in sorted_section_order}
 
@@ -609,8 +618,8 @@ def build_markdown(
 
     lines.append("## errors")
     lines.append("")
-    if errors:
-        for index, error in enumerate(errors, start=1):
+    if visible_errors:
+        for index, error in enumerate(visible_errors, start=1):
             lines.append(f"### {index}. {error['section']}")
             if error.get("generated_at"):
                 lines.append(f"- 抓取时间：{error['generated_at']}")

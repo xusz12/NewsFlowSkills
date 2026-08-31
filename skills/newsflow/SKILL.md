@@ -71,7 +71,7 @@ Non-recoverable prepare codes:
 7. Parse incremental JSON result:
    - `run_fresh_items_raw`: this run's fresh stories after removing yesterday URLs and earlier same-day URLs.
    - `items_to_translate`: stories whose titles still need model translation for display.
-   - `current_run_errors`: errors and recovered degradations from this run. When a primary command fails but a retry or fallback succeeds, the pipeline may still emit an `已恢复：...` entry here so downstream reports can surface source health issues.
+   - `current_run_errors`: errors and recovered degradations from this run. When a primary command fails but a retry or fallback succeeds, the pipeline emits a `recovered: true` / `已恢复：...` entry. Machine JSON, daily state, daily sidecar, and error counts retain it, while Markdown `## errors` hides it.
    - `daily_errors`: accumulated errors and recovered degradations for the current day.
    - `run_id` / `started_at` / `finished_at`: immutable run identity fields. Downstream steps must preserve them exactly.
    - `run_output_stem`: deterministic `YYYY-MM-DD-HH-mm-ss-<sha256前12位>` stem derived from `generated_at + run_id`; use it for per-run output names.
@@ -120,7 +120,7 @@ python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" plan-translations --incre
 - Translate and merge each repair batch with `merge-translation-batch`, using `translation-repair-batch-NNN.json` and `translation-repair-plan.json`. Do not directly edit the cumulative map or create another repair plan.
 - Run `validate-translations` exactly one more time after repair.
 - Validation automatically records hidden run-scoped state in `translation-validation.json`. Do not edit it. If initial validation has issues, `finalize` rejects the run until one repair plan and a second validation have been completed.
-- Translation diagnostics remain in the hidden validation state; they are not rendered in Markdown or news-reader sidecar `errors`.
+- Translation diagnostics remain in the hidden validation state; they are not rendered in Markdown or news-reader sidecar `errors`. Recovered collection records remain in machine JSON and the daily sidecar but are not rendered in Markdown; final collection failures remain visible.
 - Do not loop indefinitely. Even if the second validate still reports title issues, continue to finalize so news collection is not blocked; report the result as a partial translation outcome, never as full translation success. Diagnostics remain only in hidden run state, not user output errors.
 - `validate-translations` checks structure and required-field coverage only; it does not score translation style/quality.
 

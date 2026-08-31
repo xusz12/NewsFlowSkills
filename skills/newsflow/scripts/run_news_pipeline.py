@@ -453,6 +453,7 @@ def build_recovered_error(
         "command": primary_command,
         "command_str": primary_command_str,
         "error": recovered_error,
+        "recovered": True,
     }
 
 

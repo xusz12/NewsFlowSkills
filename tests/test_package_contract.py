@@ -109,7 +109,8 @@ def test_readme_documents_project_lifecycle() -> None:
     assert "让 agent 使用 `$newsflow`" in content
     assert "当前仍是本地候选版本" in content
     assert "`v1.2.2` 默认配置包含 19 个采集入口，其中 X/Twitter 11 个" in content
-    assert "`v1.2.2` 当前仍是本地候选版本" in content
+    assert "`v1.2.3` 当前仍是本地候选版本" in content
+    assert "只保留在机器 JSON、日状态与 daily sidecar，不显示在 Markdown" in content
     assert "dailyFreshNews_YYYY-MM-DD.newsreader.json" in content
     assert "YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json" not in content
     assert "per-run freshNews 不生成 sidecar" in content

@@ -1,6 +1,13 @@
 # Changelog
 
-## v1.2.2（待发布）— 调整 X 来源清单
+## v1.2.3（待发布）— Markdown 隐藏已恢复采集告警
+
+- retry 或 fallback 最终成功的采集记录新增稳定的 `recovered: true` 标记，并继续保留在运行 JSON、日状态、daily sidecar 与错误计数中。
+- 单轮与每日 Markdown 的 `## errors` 只显示最终失败；仅有已恢复记录时显示 `- 无`。
+- 兼容缺少新标记但错误文本以 `已恢复：` 开头的 v1.2.2 日状态。
+- 修正 Aelia Capitolina 的 X 采集 handle：主命令与 fallback 统一由失效的 `Areskapitalon` 改为 `kaptonia`。
+
+## v1.2.2（2026-08-23）— 调整 X 来源清单
 
 - 移除 `jakevin7`、`cyrilxuq` 与 `HuXijin_GT`，新增 `WaylandZhang`。
 - 默认配置现有 19 个采集入口，其中 X/Twitter 11 个；新账号沿用 opencli 主路径、native fallback 与 `auto` 翻译策略。

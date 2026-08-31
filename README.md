@@ -71,7 +71,7 @@ finalize 成功后，workspace 中会出现：
 - finalize 若发现 state drift，使用同一 `current.json` 重做 prepare，复用已有翻译并只补新缺口；不强制 finalize，也不自动重跑 pipeline。
 - 每轮 fresh 文件禁止覆盖；旧 run 工件、混用 run 目录或已经 finalized 的 run 会被拒绝。
 - 升级不会删除历史已存在的 per-run sidecar；旧 state 中的 `run_sidecar_path` 可继续读取但不再使用，新运行不写该字段。
-- 翻译诊断只保存在隐藏 validation state，不污染用户 Markdown 或 sidecar `errors`；采集来源错误仍会正常呈现。
+- 翻译诊断只保存在隐藏 validation state，不污染用户 Markdown 或 sidecar `errors`。最终失败的采集来源错误会在 Markdown 与 sidecar 中呈现；retry 或 fallback 最终成功的 `recovered` 记录只保留在机器 JSON、日状态与 daily sidecar，不显示在 Markdown。
 - export 失败不会回滚已成功生成的本地 Markdown、daily sidecar 或日状态。
 
 ## 快速开始
@@ -80,7 +80,7 @@ finalize 成功后，workspace 中会出现：
 2. 在该 workspace 中让 agent 使用 `$newsflow` 运行默认配置，或同时提供自定义 config 路径。
 3. 首次使用或验证新配置时，先在隔离 workspace 运行，确认来源命令、fresh/daily 产物与状态符合预期，再迁移到目标 workspace。
 
-业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。`v1.2.2` 当前仍是本地候选版本，远端发布前不要把主分支安装结果表述为已验证的 v1.2.2。
+业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。`v1.2.3` 当前仍是本地候选版本，远端发布前不要把主分支安装结果表述为已验证的 v1.2.3。
 
 ## 仓库结构
 

@@ -220,6 +220,46 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             current_json.resolve(),
         )
 
+    def test_recovered_collection_error_has_stable_machine_marker(self) -> None:
+        pipeline = load_pipeline_module()
+        incremental = load_incremental_module()
+        recovered = pipeline.build_recovered_error(
+            section="world",
+            primary_command=["opencli", "ReutersBrowser", "news"],
+            primary_attempts=[
+                {
+                    "ok": False,
+                    "failed_reason": "nonzero_exit",
+                },
+                {
+                    "ok": True,
+                    "failed_reason": "",
+                },
+            ],
+            success_attempt={"command_str": "opencli ReutersBrowser news"},
+            used_fallback=False,
+        )
+
+        self.assertIs(recovered["recovered"], True)
+        self.assertTrue(recovered["error"].startswith("已恢复："))
+        fallback_recovered = pipeline.build_recovered_error(
+            section="WaylandZhang",
+            primary_command=["opencli", "twitter", "tweets", "WaylandZhang"],
+            primary_attempts=[{"ok": False, "failed_reason": "nonzero_exit"}],
+            success_attempt={"command_str": "twitter user-posts WaylandZhang"},
+            used_fallback=True,
+        )
+        self.assertIs(fallback_recovered["recovered"], True)
+        self.assertIn("fallback 成功", fallback_recovered["error"])
+        self.assertIs(incremental.normalize_error(recovered)["recovered"], True)
+        self.assertTrue(incremental.is_recovered_error(recovered))
+        self.assertTrue(incremental.is_recovered_error({"error": "已恢复：旧状态"}))
+        self.assertFalse(
+            incremental.is_recovered_error(
+                {"error": "已恢复：但有显式失败标记", "recovered": False}
+            )
+        )
+
     def test_isolated_shortest_complete_workflow(self) -> None:
         run_dir = self.make_run_dir("shortest-chain")
         current_json = run_dir / "current.json"
@@ -322,7 +362,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "WaylandZhang",
                 "aleabitoreddit",
                 "LinQingV",
-                "Areskapitalon",
+                "kaptonia",
                 "ChinaMacroFacts",
                 "MacroMargin",
             ],
@@ -336,7 +376,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "WaylandZhang": "WaylandZhang",
             "aleabitoreddit": "Serenity",
             "LinQingV": "Macro_Lin",
-            "Areskapitalon": "Aelia Capitolina",
+            "kaptonia": "Aelia Capitolina",
             "ChinaMacroFacts": "中国政经事实ChinaFacts",
             "MacroMargin": "宏观边际MacroMargin",
         }
@@ -357,6 +397,11 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "source_name": "WaylandZhang",
             },
         )
+        aelia = next(entry for entry in twitter_entries if entry["source_handle"] == "kaptonia")
+        self.assertEqual(aelia["source_name"], "Aelia Capitolina")
+        self.assertEqual(aelia["command"][3], "kaptonia")
+        self.assertEqual(aelia["fallback_command"][2], "kaptonia")
+        self.assertNotEqual(aelia["source_handle"], "Areskapitalon")
         for entry in twitter_entries:
             handle = entry["command"][3]
             self.assertEqual(entry["command"][2], "tweets")
@@ -713,6 +758,41 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("must be stored under", result.stderr)
         self.assertIn("[PREPARE_BAD_ARTIFACT_PATH]", result.stderr)
+
+    def test_prepare_preserves_recovered_marker_and_counts(self) -> None:
+        run_dir = self.make_run_dir("prepare-recovered")
+        current_json = run_dir / "current.json"
+        incremental_json = run_dir / "incremental.json"
+        recovered = {
+            "section": "world",
+            "command_str": "opencli ReutersBrowser news",
+            "error": "已恢复：第二次重试成功",
+            "recovered": True,
+        }
+        write_json(
+            current_json,
+            self.make_current_payload(
+                run_id="prepare-recovered",
+                started_at="2026-04-09 12:00:00",
+                finished_at="2026-04-09 12:05:00",
+                errors=[recovered],
+            ),
+        )
+
+        result = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "prepare",
+            "--current-json", str(current_json),
+            "--state-dir", str(self.state_dir),
+            "--out-json", str(incremental_json),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = read_json(incremental_json)
+        self.assertIs(payload["current_run_errors"][0]["recovered"], True)
+        self.assertIs(payload["daily_errors"][0]["recovered"], True)
+        self.assertEqual(payload["stats"]["current_error_count"], 1)
+        self.assertEqual(payload["stats"]["daily_error_count"], 1)
 
     def test_prepare_rejects_stale_current_json(self) -> None:
         run_dir = self.make_run_dir("stale-run")
@@ -1224,6 +1304,109 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
 
         self.assertEqual(loaded["runs"][0]["run_sidecar_path"], str(legacy_sidecar))
         self.assertEqual(read_json(legacy_sidecar), {"schema_version": "legacy", "sentinel": True})
+
+    def test_finalize_hides_recovered_errors_only_from_markdown(self) -> None:
+        write_json(self.today_state_path, make_state_payload(runs=[]))
+        recovered = {
+            "section": "world",
+            "generated_at": "2026-04-09 12:05:00",
+            "command_str": "opencli ReutersBrowser news",
+            "error": "已恢复：第二次重试成功",
+            "recovered": True,
+        }
+
+        first_run_dir = self.make_run_dir("recovered-only")
+        first_incremental = first_run_dir / "incremental.json"
+        first_translated = first_run_dir / "translated.json"
+        first_payload = self.make_incremental_payload(
+            run_dir=first_run_dir,
+            run_id="recovered-only",
+            started_at="2026-04-09 12:00:00",
+            finished_at="2026-04-09 12:05:00",
+        )
+        first_payload["current_run_errors"] = [recovered]
+        first_payload["daily_errors"] = [recovered]
+        first_payload["stats"]["current_error_count"] = 1
+        first_payload["stats"]["daily_error_count"] = 1
+        write_json(first_incremental, first_payload)
+        write_json(first_translated, {})
+
+        first = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json", str(first_incremental),
+            "--translated-json", str(first_translated),
+            "--state-dir", str(self.state_dir),
+            "--out-dir", str(self.out_dir),
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        first_run_md = Path(first_result["run_fresh_path"]).read_text(encoding="utf-8")
+        first_daily_md = Path(first_result["daily_fresh_path"]).read_text(encoding="utf-8")
+        self.assertEqual(first_run_md.split("## errors", 1)[1].strip(), "- 无")
+        self.assertEqual(first_daily_md.split("## errors", 1)[1].strip(), "- 无")
+        first_state = read_json(self.today_state_path)
+        self.assertIs(first_state["daily_errors"][0]["recovered"], True)
+        self.assertEqual(first_state["runs"][-1]["error_count"], 1)
+        self.assertEqual(
+            read_json(Path(first_result["daily_sidecar_path"]))["errors"][0]["message"],
+            recovered["error"],
+        )
+
+        legacy_recovered = {
+            "section": "technology",
+            "generated_at": "2026-04-09 12:10:00",
+            "command_str": "legacy fallback",
+            "error": "已恢复：fallback 成功",
+        }
+        final_failure = {
+            "section": "business",
+            "generated_at": "2026-04-09 12:10:00",
+            "command_str": "opencli ReutersBrowser news",
+            "error": "nonzero exit: final failure",
+        }
+        second_run_dir = self.make_run_dir("mixed-errors")
+        second_incremental = second_run_dir / "incremental.json"
+        second_translated = second_run_dir / "translated.json"
+        second_payload = self.make_incremental_payload(
+            run_dir=second_run_dir,
+            run_id="mixed-errors",
+            started_at="2026-04-09 12:06:00",
+            finished_at="2026-04-09 12:10:00",
+            latest_generated_at="2026-04-09 12:05:00",
+            latest_run_id="recovered-only",
+        )
+        second_payload["current_run_errors"] = [legacy_recovered, final_failure]
+        second_payload["daily_errors"] = [recovered, legacy_recovered, final_failure]
+        second_payload["stats"]["current_error_count"] = 2
+        second_payload["stats"]["daily_error_count"] = 3
+        write_json(second_incremental, second_payload)
+        write_json(second_translated, {})
+
+        second = self.run_cmd(
+            str(INCREMENTAL_SCRIPT),
+            "finalize",
+            "--incremental-json", str(second_incremental),
+            "--translated-json", str(second_translated),
+            "--state-dir", str(self.state_dir),
+            "--out-dir", str(self.out_dir),
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_result = json.loads(second.stdout)
+        for markdown_path in (second_result["run_fresh_path"], second_result["daily_fresh_path"]):
+            errors_markdown = Path(markdown_path).read_text(encoding="utf-8").split(
+                "## errors", 1
+            )[1]
+            self.assertIn("final failure", errors_markdown)
+            self.assertNotIn("已恢复：", errors_markdown)
+        second_state = read_json(self.today_state_path)
+        self.assertEqual(len(second_state["daily_errors"]), 3)
+        self.assertEqual(second_state["runs"][-1]["error_count"], 2)
+        self.assertEqual(second_result["stats"]["daily_error_count"], 3)
+        self.assertEqual(
+            [entry["message"] for entry in read_json(Path(second_result["daily_sidecar_path"]))["errors"]],
+            [recovered["error"], legacy_recovered["error"], final_failure["error"]],
+        )
 
     def test_finalize_sidecar_separates_collector_from_four_content_authors(self) -> None:
         run_dir = self.make_run_dir("twitter-collector-contract")
