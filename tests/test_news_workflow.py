@@ -347,8 +347,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             and entry.get("command", [None, None])[:2] == ["opencli", "twitter"]
         ]
         self.assertTrue(twitter_entries, "expected twitter sources in default commands.json")
-        self.assertEqual(len(entries), 19)
-        self.assertEqual(len(twitter_entries), 11)
+        self.assertEqual(len(entries), 17)
+        self.assertEqual(len(twitter_entries), 9)
         handles = [entry["command"][3] for entry in twitter_entries]
         self.assertEqual(len(handles), len(set(handles)), "twitter handles must be unique")
         self.assertEqual(
@@ -360,9 +360,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "fxtrader",
                 "Time_HorizonX",
                 "WaylandZhang",
-                "aleabitoreddit",
                 "LinQingV",
-                "kaptonia",
                 "ChinaMacroFacts",
                 "MacroMargin",
             ],
@@ -374,13 +372,11 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             "fxtrader": "外汇交易员",
             "Time_HorizonX": "Time Horizon",
             "WaylandZhang": "WaylandZhang",
-            "aleabitoreddit": "Serenity",
             "LinQingV": "Macro_Lin",
-            "kaptonia": "Aelia Capitolina",
             "ChinaMacroFacts": "中国政经事实ChinaFacts",
             "MacroMargin": "宏观边际MacroMargin",
         }
-        removed_handles = {"jakevin7", "cyrilxuq", "HuXijin_GT"}
+        removed_handles = {"jakevin7", "cyrilxuq", "HuXijin_GT", "aleabitoreddit", "kaptonia", "Areskapitalon"}
         self.assertTrue(removed_handles.isdisjoint(handles))
         self.assertTrue(
             all(
@@ -397,11 +393,6 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
                 "source_name": "WaylandZhang",
             },
         )
-        aelia = next(entry for entry in twitter_entries if entry["source_handle"] == "kaptonia")
-        self.assertEqual(aelia["source_name"], "Aelia Capitolina")
-        self.assertEqual(aelia["command"][3], "kaptonia")
-        self.assertEqual(aelia["fallback_command"][2], "kaptonia")
-        self.assertNotEqual(aelia["source_handle"], "Areskapitalon")
         for entry in twitter_entries:
             handle = entry["command"][3]
             self.assertEqual(entry["command"][2], "tweets")
@@ -622,7 +613,7 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             if isinstance(entry, dict) and entry.get("source_type") == "twitter"
         ]
 
-        self.assertEqual(len(twitter_entries), 11)
+        self.assertEqual(len(twitter_entries), 9)
         for index, entry in enumerate(twitter_entries, start=1):
             item = {
                 "section": entry["section"],

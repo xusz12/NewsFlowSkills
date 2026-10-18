@@ -1,6 +1,33 @@
 # Changelog
 
-## v1.2.3（待发布）— Markdown 隐藏已恢复采集告警
+版本标签使用 `vMAJOR.MINOR.PATCH`。日期采用 `Asia/Shanghai`，历史版本日期以对应 Git 提交记录为准。
+
+## v1.2.4（2026-10-18）— RSS 单层重试与来源调整
+
+### 变更
+
+- 移除 Serenity（`aleabitoreddit`）和 Aelia Capitolina（`kaptonia`）两个 X 来源及其备用命令；默认配置现有 17 个采集入口，其中 X/Twitter 9 个。
+- 三个 RSS 来源单独设置 25 秒命令超时，保留其他来源的超时配置；配套 clis v0.9.0，每个 RSS adapter 调用只发一次请求。
+- 识别 opencli 2.0 的 `ok/data/error` 包装与版本化 RSS 错误元数据；仅临时失败最多补试一次，等待 5–7 秒并遵守服务器冷却要求。
+- 超出 30 秒等待预算则跳过重试并继续后续来源；人工验证、权限、404、格式和空结果不做无效重试。
+- Reuters 列表由其 adapter 自己恢复，关闭 NewsFlow 的重复外层重试；保留 X 的备用采集路径。
+- 增加等待/尝试诊断；三个 RSS adapter 的实现位于独立 clis 仓库，未包含在此 skill payload 中。
+
+### 修复
+
+- `ok: false` 即使命令退出码为 0 也判为失败，避免错误包装被当作成功数据。
+- 显式权限、格式和缺失页面错误优先于文本中的超时关键词，避免误重试；可执行文件缺失作为来源失败处理，不中断后续来源。
+- 长冷却不会被 fallback 立即绕过；记录服务器要求的 UTC 截止时间，便于后续处理。独立新运行不继承冷却状态。
+- 同步 README、SKILL 与测试中的来源数量和版本说明，移除旧版候选状态描述。
+
+### 验证
+
+- 发布前 116 项 pytest 测试全部通过。
+- 离线回归覆盖错误包装、分类、次数和退避、服务器冷却、超时覆盖、fallback、来源清单与安装 payload 合同。
+- 2026-10-18 使用真实 NewsFlow pipeline 在隔离目录验证三个 RSS 来源：Bloomberg tech 7 条、TechCrunch 10 条、Ars 10 条，共 27 条；每个来源仅调用一次，错误为 0。
+- 实测仅执行采集阶段；翻译、finalize 和真实 DailyNews 导出不属于本轮联网验证。
+
+## v1.2.3（2026-08-31）— Markdown 隐藏已恢复采集告警
 
 - retry 或 fallback 最终成功的采集记录新增稳定的 `recovered: true` 标记，并继续保留在运行 JSON、日状态、daily sidecar 与错误计数中。
 - 单轮与每日 Markdown 的 `## errors` 只显示最终失败；仅有已恢复记录时显示 `- 无`。
@@ -27,7 +54,7 @@
 - 统一 `quoted_text_zh` 为引用文本 canonical 字段；旧 `quoted_text` 仅作兼容回退，冲突值会被验证拦截并要求修复。
 - export 新增 `--target-root`，并支持 `NEWSFLOW_EXPORT_ROOT`；CLI、环境变量、旧个人默认路径按优先级解析，同时兼容旧分钟级文件名。
 
-## v1.1.2（待发布）— 分离 X 采集入口与内容作者
+## v1.1.2（2026-07-30）— 分离 X 采集入口与内容作者
 
 - 每个 Twitter command 显式声明 `source_type`、`source_handle` 与 `source_name`，并将采集账号身份贯穿到 normalized item 和 newsreader sidecar。
 - 条目 URL、`author_name` 与 `author_screen_name` 继续表示实际内容作者；原创、转发、回复和引用不会覆盖采集入口身份。

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
+import random
+import re
 import shlex
 import subprocess
 import sys
@@ -33,6 +36,15 @@ NOISE_PREFIXES = (
     "(Use `node --trace-warnings",
 )
 DISPLAY_TIME_FORMAT = "%Y-%m-%d %H:%M"
+RETRY_DELAY_SECONDS = 5.0
+RETRY_JITTER_SECONDS = 2.0
+MAX_RETRY_WAIT_SECONDS = 30.0
+TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
+TERMINAL_ERROR_CODES = {
+    "AUTH_REQUIRED", "ARGUMENT", "CONFIG", "NOT_FOUND", "INVALID_FEED", "EMPTY_RESULT",
+    "INVALID_JSON", "UNSUPPORTED_URL", "CONTENT_TOO_SHORT", "CONTENT_UNAVAILABLE",
+    "RETRY_AFTER", "INVALID_RETRY_METADATA",
+}
 
 
 def make_run_id(started_at: datetime) -> str:
@@ -310,6 +322,99 @@ def parse_positive_int(raw: Any, default: int) -> int:
     return default
 
 
+def structured_command_error(stdout_text: str) -> dict[str, Any] | None:
+    """Read opencli 2.x errors even when a command mistakenly exits with zero."""
+    try:
+        payload = json.loads(stdout_text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("ok") is not False:
+        return None
+    error = payload.get("error")
+    return error if isinstance(error, dict) else {"code": "OPENCLI_ERROR", "message": str(error or "Command failed")}
+
+
+def parse_retry_at(value: Any) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("retry_at must be an ISO timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("retry_at must include a timezone")
+    timestamp = parsed.timestamp()
+    if not math.isfinite(timestamp):
+        raise ValueError("retry_at must be finite")
+    return timestamp
+
+
+def classify_command_error(error: dict[str, Any] | None, message: str) -> dict[str, Any]:
+    error = error or {}
+    code = str(error.get("code") or "UNKNOWN").upper()
+    status = None
+    retry_at = None
+    metadata = None
+    try:
+        candidate = json.loads(error.get("cause", ""))
+        if isinstance(candidate, dict) and candidate.get("schema") == "newsflow.rss-error/v1":
+            metadata = candidate
+    except (ValueError, TypeError):
+        pass
+    if metadata is not None:
+        try:
+            status = metadata.get("http_status")
+            if status is not None and (type(status) is not int or not 100 <= status <= 599):
+                raise ValueError("invalid HTTP status")
+            if type(metadata.get("retryable")) is not bool:
+                raise ValueError("invalid retryable flag")
+            retry_at = metadata.get("retry_at")
+            parse_retry_at(retry_at)
+        except (ValueError, OverflowError, OSError):
+            return {"error_code": "INVALID_RETRY_METADATA", "retryable": False, "http_status": status, "retry_at": None}
+        retryable = metadata["retryable"]
+        if status is not None:
+            retryable = retryable and status in TRANSIENT_HTTP_STATUSES
+    else:
+        match = re.search(r"\bHTTP(?:\s+(?:status|error))?\s*[:=]?\s*(\d{3})\b", message, re.I)
+        status = int(match[1]) if match else None
+        retryable = code in {"TIMEOUT", "NETWORK_ERROR", "BROWSER_CONNECT", "ECONNRESET", "ETIMEDOUT"}
+        if status is not None:
+            retryable = status in TRANSIENT_HTTP_STATUSES
+        if status is None and code in {"UNKNOWN", "COMMAND_EXEC"} and re.search(
+            r"navigation rejected|browser connection dropped|connection (?:reset|closed)|timed? out|\bECONNRESET\b|\bETIMEDOUT\b", message, re.I
+        ):
+            retryable = True
+    if code in TERMINAL_ERROR_CODES or re.search(r"captcha|human verification|bot.protection|paywall|subscription required", message, re.I):
+        retryable = False
+    return {"error_code": code, "retryable": retryable, "http_status": status, "retry_at": retry_at}
+
+
+def retry_delay(attempt: dict[str, Any]) -> float | None:
+    if not attempt.get("retryable", False):
+        return None
+    delay = RETRY_DELAY_SECONDS + random.uniform(0, RETRY_JITTER_SECONDS)
+    until = parse_retry_at(attempt.get("retry_at"))
+    if until is not None:
+        delay = max(delay, until - time.time())
+    # Never shorten a server cooldown just to fit the local waiting budget.
+    return delay if delay <= MAX_RETRY_WAIT_SECONDS else None
+
+
+def wait_for_retry(delay: float, retry_at: str | None) -> tuple[float, bool]:
+    started = time.monotonic()
+    ready = started + delay
+    deadline = started + MAX_RETRY_WAIT_SECONDS
+    until = parse_retry_at(retry_at)
+    while True:
+        now = time.monotonic()
+        remaining = max(ready - now, (until - time.time()) if until is not None else 0.0)
+        if remaining <= 0:
+            return now - started, True
+        if now + remaining > deadline:
+            return now - started, False
+        time.sleep(remaining)
+
+
 def execute_command_once(
     *,
     section: str,
@@ -339,21 +444,36 @@ def execute_command_once(
             "command_str": command_str,
             "error": f"timeout after {timeout_seconds}s",
             "failed_reason": "timeout",
+            "error_code": "TIMEOUT", "retryable": True, "retry_at": None,
             "items": [],
             "raw_count": 0,
             "valid_count": 0,
         }
 
-    if proc.returncode != 0:
+    except OSError as exc:
+        return {
+            "ok": False, "command": command, "command_str": command_str,
+            "error": str(exc), "failed_reason": "command_unavailable",
+            "error_code": "COMMAND_UNAVAILABLE", "retryable": False,
+            "items": [], "raw_count": 0, "valid_count": 0,
+        }
+
+    structured = structured_command_error(proc.stdout)
+    if proc.returncode != 0 or structured is not None:
+        message = (str(structured.get("message") or structured.get("code") or "Command failed")
+                   if structured is not None else summarize_error(proc.stdout, proc.stderr, proc.returncode))
+        if structured and structured.get("hint"):
+            message += " | " + str(structured["hint"])
         return {
             "ok": False,
             "command": command,
             "command_str": command_str,
-            "error": summarize_error(proc.stdout, proc.stderr, proc.returncode),
-            "failed_reason": "non_zero_exit",
+            "error": message,
+            "failed_reason": "non_zero_exit" if proc.returncode else "structured_error",
             "items": [],
             "raw_count": 0,
             "valid_count": 0,
+            **classify_command_error(structured, message),
         }
 
     try:
@@ -365,6 +485,7 @@ def execute_command_once(
             "command_str": command_str,
             "error": f"JSON parse error: {exc}",
             "failed_reason": "json_parse_error",
+            "error_code": "INVALID_JSON", "retryable": False,
             "items": [],
             "raw_count": 0,
             "valid_count": 0,
@@ -396,6 +517,7 @@ def execute_command_once(
                 f"{valid_count} < {min_valid_items}"
             ),
             "failed_reason": "below_min_valid_items",
+            "error_code": "EMPTY_RESULT", "retryable": False,
             "items": items,
             "raw_count": len(rows),
             "valid_count": valid_count,
@@ -485,6 +607,9 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
             parse_command(fallback_raw) if fallback_raw is not None else None
         )
 
+        command_timeout = item.get("command_timeout_seconds")
+        if command_timeout is not None and (type(command_timeout) is not int or command_timeout <= 0):
+            raise ValueError(f"config item #{i} command_timeout_seconds must be a positive integer")
         retry_once = bool(item.get("retry_once", False))
         treat_empty_as_failure = bool(item.get("treat_empty_as_failure", False))
         min_valid_items = parse_positive_int(item.get("min_valid_items", 1), default=1)
@@ -533,6 +658,7 @@ def load_config(config_path: Path) -> list[dict[str, Any]]:
                 "command": command,
                 "fallback_command": fallback_command,
                 "retry_once": retry_once,
+                "command_timeout_seconds": command_timeout,
                 "treat_empty_as_failure": treat_empty_as_failure,
                 "min_valid_items": min_valid_items,
                 "translation_policy": translation_policy,
@@ -585,11 +711,14 @@ def run_pipeline(
             section_order.append(section)
             section_items[section] = []
 
+        source_timeout = min(timeout_seconds, entry.get("command_timeout_seconds") or timeout_seconds)
         primary_attempts: list[dict[str, Any]] = []
+        retry_wait_seconds = 0.0
+        retry_skip_reason = ""
         first = execute_command_once(
             section=section,
             command=command,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=source_timeout,
             min_valid_items=min_valid_items,
             treat_empty_as_failure=treat_empty_as_failure,
             translation_policy=translation_policy,
@@ -600,26 +729,35 @@ def run_pipeline(
         )
         primary_attempts.append(first)
 
-        if (not first["ok"]) and retry_once:
-            second = execute_command_once(
-                section=section,
-                command=command,
-                timeout_seconds=timeout_seconds,
-                min_valid_items=min_valid_items,
-                treat_empty_as_failure=treat_empty_as_failure,
-                translation_policy=translation_policy,
-                output_timezone=output_timezone,
-                source_type=source_type,
-                source_handle=source_handle,
-                source_name=source_name,
-            )
-            primary_attempts.append(second)
+        delay = retry_delay(first) if (not first["ok"]) and retry_once else None
+        if (not first["ok"]) and retry_once and delay is None:
+            retry_skip_reason = "server_cooldown_exceeds_budget" if first.get("retryable") else "non_retryable_error"
+        if delay is not None:
+            print(f"[retry] section={section} wait_seconds={delay:.3f} code={first.get('error_code', 'UNKNOWN')}", file=sys.stderr)
+            retry_wait_seconds, ready = wait_for_retry(delay, first.get("retry_at"))
+            if not ready:
+                retry_skip_reason = "server_cooldown_exceeds_budget"
+            else:
+                second = execute_command_once(
+                    section=section,
+                    command=command,
+                    timeout_seconds=source_timeout,
+                    min_valid_items=min_valid_items,
+                    treat_empty_as_failure=treat_empty_as_failure,
+                    translation_policy=translation_policy,
+                    output_timezone=output_timezone,
+                    source_type=source_type,
+                    source_handle=source_handle,
+                    source_name=source_name,
+                )
+                primary_attempts.append(second)
 
         success_attempt = next((a for a in primary_attempts if a["ok"]), None)
         used_fallback = False
         fallback_attempt: dict[str, Any] | None = None
 
-        if success_attempt is None and fallback_command:
+        cooldown_until = parse_retry_at(primary_attempts[-1].get("retry_at"))
+        if success_attempt is None and fallback_command and (cooldown_until is None or cooldown_until <= time.time()):
             fallback_attempt = execute_command_once(
                 section=section,
                 command=fallback_command,
@@ -663,6 +801,7 @@ def run_pipeline(
                     "duration_ms": section_duration_ms,
                     "attempts": attempts_count,
                     "items": len(success_attempt["items"]),
+                    "retry_wait_seconds": round(retry_wait_seconds, 3),
                 }
             )
             if (len(primary_attempts) > 1) or used_fallback:
@@ -706,6 +845,12 @@ def run_pipeline(
             final_command = last_primary["command"]
             final_command_str = last_primary["command_str"]
 
+        final_attempt = fallback_attempt or primary_attempts[-1]
+        if final_attempt.get("retry_at"):
+            final_error += f"; server cooldown until {final_attempt['retry_at']}"
+        if retry_skip_reason == "server_cooldown_exceeds_budget":
+            final_error += f"; automatic retry skipped (maximum wait {MAX_RETRY_WAIT_SECONDS:g}s)"
+
         print(
             (
                 f"[timing] section={section} status=failed "
@@ -721,6 +866,8 @@ def run_pipeline(
                 "duration_ms": section_duration_ms,
                 "attempts": attempts_count,
                 "items": 0,
+                "retry_wait_seconds": round(retry_wait_seconds, 3),
+                "retry_skip_reason": retry_skip_reason,
             }
         )
 
@@ -730,6 +877,9 @@ def run_pipeline(
                 "command": final_command,
                 "command_str": final_command_str,
                 "error": final_error,
+                "error_code": final_attempt.get("error_code", "UNKNOWN"),
+                "retry_at": final_attempt.get("retry_at"),
+                "retry_skip_reason": retry_skip_reason,
             }
         )
 
@@ -769,6 +919,7 @@ def run_pipeline(
         "deduped_items": deduped_items,
         "errors": errors,
         "recovered_attempts": recovered_attempts,
+        "timings": timing_rows,
         "stats": {
             "command_count": len(entries),
             "section_count": len(section_order),

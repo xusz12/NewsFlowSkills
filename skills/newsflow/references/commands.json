@@ -15,7 +15,7 @@
       "--format",
       "json"
     ],
-    "retry_once": true,
+    "retry_once": false,
     "treat_empty_as_failure": true,
     "min_valid_items": 1
   },
@@ -35,7 +35,7 @@
       "--format",
       "json"
     ],
-    "retry_once": true,
+    "retry_once": false,
     "treat_empty_as_failure": true,
     "min_valid_items": 1
   },
@@ -55,7 +55,7 @@
       "--format",
       "json"
     ],
-    "retry_once": true,
+    "retry_once": false,
     "treat_empty_as_failure": true,
     "min_valid_items": 1
   },
@@ -75,7 +75,7 @@
       "--format",
       "json"
     ],
-    "retry_once": true,
+    "retry_once": false,
     "treat_empty_as_failure": true,
     "min_valid_items": 1
   },
@@ -95,7 +95,7 @@
       "--format",
       "json"
     ],
-    "retry_once": true,
+    "retry_once": false,
     "treat_empty_as_failure": true,
     "min_valid_items": 1
   },
@@ -116,7 +116,8 @@
     ],
     "retry_once": true,
     "treat_empty_as_failure": true,
-    "min_valid_items": 1
+    "min_valid_items": 1,
+    "command_timeout_seconds": 25
   },
   {
     "section": "techcrunch",
@@ -135,7 +136,8 @@
     ],
     "retry_once": true,
     "treat_empty_as_failure": true,
-    "min_valid_items": 1
+    "min_valid_items": 1,
+    "command_timeout_seconds": 25
   },
   {
     "section": "arstechnica",
@@ -154,7 +156,8 @@
     ],
     "retry_once": true,
     "treat_empty_as_failure": true,
-    "min_valid_items": 1
+    "min_valid_items": 1,
+    "command_timeout_seconds": 25
   },
   {
     "section": "Ilya Sutskever",
@@ -343,37 +346,6 @@
     ]
   },
   {
-    "section": "aleabitoreddit",
-    "display_name": "aleabitoreddit",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "aleabitoreddit",
-    "source_name": "Serenity",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "aleabitoreddit",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "aleabitoreddit",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
     "section": "LinQingV",
     "display_name": "LinQingV",
     "translation_policy": "auto",
@@ -398,37 +370,6 @@
       "twitter",
       "user-posts",
       "LinQingV",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
-    "section": "Areskapitalon",
-    "display_name": "Areskapitalon",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "kaptonia",
-    "source_name": "Aelia Capitolina",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "kaptonia",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "kaptonia",
       "-n",
       "10",
       "--full-text",

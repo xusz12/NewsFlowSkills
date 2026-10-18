@@ -1,5 +1,7 @@
 # NewsFlowSkills
 
+当前版本：**v1.2.4**（2026-10-18）。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 `newsflow` 按配置顺序采集多个新闻源，做全局 URL 去重、日内增量状态管理与模型内中文翻译，最终生成 daily 与 per-run 两类 Markdown；finalize 后可选导出。
 
 ## 什么是 newsflow
@@ -9,7 +11,7 @@ newsflow 是一套面向多新闻源的可恢复增量采集与中文化工作�
 核心能力：
 
 - 按 `commands.json` 的顺序串行执行多个采集命令；单个来源失败不会阻断后续来源。
-- `v1.2.2` 默认配置包含 19 个采集入口，其中 X/Twitter 11 个。
+- 当前默认配置包含 17 个采集入口，其中 X/Twitter 9 个。
 - 统一 Reuters、Bloomberg、TechCrunch、Ars 与 Twitter/X 等来源的数据结构。
 - 按绝对 URL 全局去重，并结合前一日与当日状态只输出本轮新增内容。
 - 通过模型生成中文标题、Twitter 引用翻译与 Bloomberg 摘要翻译，不接入第三方翻译 API。
@@ -66,6 +68,10 @@ finalize 成功后，workspace 中会出现：
 
 ## 恢复与安全语义
 
+- 三个 RSS 来源（`BloombergUser tech`、`TechcrunchPublic news`、`ArsPublic news`）由 NewsFlow 统一重试：单次命令上限 25 秒，最多两次尝试，临时失败后等待 5–7 秒；服务器要求更久时遵守 `Retry-After`，超过 30 秒等待预算则记录截止时间并继续其他来源。对应本机 RSS adapter 每次只发一次请求，15 秒覆盖请求及响应读取。
+- 权限/验证、404、格式错误和空结果不重试；Reuters 列表已有内部恢复，默认关闭 NewsFlow 的额外外层重试。其他来源和全局 `--timeout` 默认 300 秒保持不变，X 的备用采集路径保留。
+- `command_timeout_seconds` 可对单个来源收紧全局命令超时；`timings` 输出尝试次数、等待时间和跳过重试原因。长冷却会写入可读错误，不会被 fallback 提前绕过；冷却不跨独立运行持久化。
+
 - pipeline 必须成功完成后才能执行 prepare，不能在采集仍运行时读取半成品。
 - prepare 对 stale current、重复 run id/timestamp 或不可读工件等可恢复错误，只允许放弃失败 run 目录、重跑 pipeline + prepare 一次；坏路径、坏 metadata 或坏 state 保持硬失败。
 - finalize 若发现 state drift，使用同一 `current.json` 重做 prepare，复用已有翻译并只补新缺口；不强制 finalize，也不自动重跑 pipeline。
@@ -80,7 +86,9 @@ finalize 成功后，workspace 中会出现：
 2. 在该 workspace 中让 agent 使用 `$newsflow` 运行默认配置，或同时提供自定义 config 路径。
 3. 首次使用或验证新配置时，先在隔离 workspace 运行，确认来源命令、fresh/daily 产物与状态符合预期，再迁移到目标 workspace。
 
-业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。`v1.2.3` 当前仍是本地候选版本，远端发布前不要把主分支安装结果表述为已验证的 v1.2.3。
+业务脚本负责确定性的采集、状态、验证和落盘；模型只负责翻译计划指定的文本。完整错误码、恢复条件、翻译 JSON schema 与输出合同见安装 payload 的 `SKILL.md`。
+
+本版本配套 [clis v0.9.0](https://github.com/xusz12/clis/tree/v0.9.0)，本机验证使用 opencli 2.0.0。自定义适配器需要单独安装或更新；安装 NewsFlow skill 不会更新 opencli 或 `~/.opencli/clis`。三个 RSS 来源的重试由 NewsFlow 负责，Reuters 列表的恢复由对应适配器负责。
 
 ## 仓库结构
 
@@ -136,10 +144,12 @@ npx -y skills add xusz12/NewsFlowSkills -a pi -y
 只有在复现特定发布或排查 installer 差异时，才同时 pin installer 版本与 tag/commit：
 
 ```bash
-npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.1.0 -s newsflow -a codex --copy -y
+npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.4 -s newsflow -a codex --copy -y
 ```
 
-其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.1.0` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
+其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.2.4` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
+
+版本使用 `vMAJOR.MINOR.PATCH` 格式。发布时同步 README、CHANGELOG 与 payload 的版本和来源说明，完成离线测试，再以简体中文提交并创建带日期、变更摘要和验证结果的 annotated tag。
 
 从当前 workspace 移除：
 
@@ -150,6 +160,12 @@ npx -y skills remove newsflow -y
 该项目级命令会删除当前 workspace 中 newsflow 的所有 project-local runtime copies 与 lock 记录。不要添加 `-a codex` 或 `--agent codex`：按 agent 移除在共享 `.agents/skills/` 目标上只清 lock、可能遗留物理目录。
 
 ## 本地开发验证
+
+在仓库根目录运行离线测试；关闭字节码输出，保持安装 payload 不含缓存文件：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q tests
+```
 
 在隔离 workspace 根目录运行：
 

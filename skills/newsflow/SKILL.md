@@ -5,6 +5,8 @@ description: Run configurable opencli news commands sequentially, skip failed co
 
 # Newsflow
 
+Version: v1.2.4.
+
 ## Execution Setup
 
 1. Resolve `<SKILL_ROOT>` as the absolute directory containing this loaded `SKILL.md`.
@@ -220,7 +222,7 @@ Non-recoverable finalize codes:
 
 ## commands.json Format
 
-The bundled v1.2.2 default config has 19 ordered source entries, including 11 Twitter accounts.
+The bundled v1.2.4 default config has 17 ordered source entries, including 9 Twitter accounts.
 
 Use JSON array of objects:
 
@@ -243,14 +245,20 @@ Rules:
 - `command` supports string array (recommended) or shell string.
 - `display_name`, `source_type`, and `source_name` define the source metadata snapshot consumed by prepare/finalize; Twitter also requires `source_handle`.
 - Optional reliability fields are supported per source:
-  - `retry_once`: retry the primary command once before recording failure.
+  - `retry_once`: retry the primary command at most once, only for a classified transient error; wait 5–7 seconds, or longer when required by server `Retry-After`.
+  - `command_timeout_seconds`: optional positive integer that shortens the global `--timeout` for this source's primary attempts; it never raises the caller's timeout. Fallback commands retain the global timeout.
   - `fallback_command`: secondary command when primary still fails.
   - `treat_empty_as_failure`: treat zero valid rows as failure for retry/fallback.
   - `min_valid_items`: minimum valid rows required for success when empty-check is enabled.
   - `translation_policy`: translation requirement policy for this source (`always`, `auto`, `never`).
 - Current policy in this skill:
-  - News portal sources use `retry_once`; most also use `treat_empty_as_failure: true` and `min_valid_items: 1`.
-  - Twitter sources use `retry_once` only; do not force empty-as-failure by default.
+  - The three RSS sources (`BloombergUser tech`, `TechcrunchPublic news`, `ArsPublic news`) use `retry_once`, `command_timeout_seconds: 25`, `treat_empty_as_failure: true`, and `min_valid_items: 1`. Their local RSS collectors make one 15-second-bounded HTTP request per invocation; the pipeline owns retries.
+  - Reuters list collectors already recover internally, so their default `retry_once` is false. Their command timeouts are unchanged.
+  - Twitter sources do not enable primary retries or empty-as-failure by default; they retain their configured fallback commands and timeout.
+  - Retry network failures, timeouts, and HTTP 408/429/500/502/503/504. Do not retry explicit access requirements, missing pages, malformed responses, empty results, invalid arguments, or unavailable executables.
+  - Respect server cooldown deadlines. If the required delay exceeds the 30-second waiting budget, record the deadline and skip the retry; do not shorten the cooldown or immediately run a fallback during it. Continue other sources.
+  - The three RSS collectors carry versioned error metadata in the existing opencli error `cause` string (`schema: newsflow.rss-error/v1`, `http_status`, `retryable`, `retry_at`). The pipeline validates this metadata and also supports classified legacy errors. Error envelopes with `ok: false` remain failures even with exit code zero.
+  - Per-source `timings` record attempt counts and retry waiting time. Recovered/error output contracts remain intact. A fresh manual/scheduled run is independent; no cross-run cooldown scheduler is introduced.
   - Reuters/Bloomberg/TechCrunch/Ars should use `translation_policy: "always"`.
   - Twitter should use `translation_policy: "auto"`.
 
