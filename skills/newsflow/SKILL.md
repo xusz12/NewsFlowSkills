@@ -5,7 +5,7 @@ description: Run configurable opencli news commands sequentially, skip failed co
 
 # Newsflow
 
-Version: v1.2.4.
+Version: v1.2.5.
 
 ## Execution Setup
 
@@ -14,6 +14,29 @@ Version: v1.2.4.
 3. Use the current environment's file-reading and file-writing capabilities for configuration, run artifacts, and model-produced translation JSON.
 4. Substitute the resolved absolute `<SKILL_ROOT>` in every command, quote every path argument, and pass all arguments in the same command invocation. Do not rely on environment variables or shell state surviving between calls.
 5. Do not detect or guess the runtime, load runtime-specific adapters, or assume a global install path or canonical repository path. This skill uses the same workflow in every environment.
+
+## Browser-backed source pre-flight
+
+- If the selected config uses browser-backed commands, run `opencli doctor` before collection (or the installed version's documented live bridge probe). Check the live command result and selected browser profile; a running process is not proof of connectivity. Never use `pgrep` alone to declare the browser ready.
+- Diagnose network reachability, recent boot/wake, and bridge/daemon/profile status before changing or reinstalling an extension. Follow specific error evidence instead of treating every `BROWSER_CONNECT` as an extension defect.
+- For network checks, use bounded `curl` requests to the failing destination and an independently reachable control destination, retaining the exit code and stderr. HTTP `000` means no response code was received; it does not establish that the machine has no network exit. DNS, proxy routing, connection, TLS, and timeout failures need different remedies. Shell and browser proxy routes may differ.
+- A target returning `000` while a control such as Google returns `200` suggests a target-specific path failure, not proof of a server-side outage or a healthy browser bridge. Do not change the browser solely on this evidence.
+- A failed bridge probe affects browser-dependent paths. Continue independent sources and configured fallbacks where available; preserve source failures in pipeline diagnostics. Do not silently remove failed sources from the config or relabel failed collection as zero new stories. The pipeline recognizes `ok: false` even with exit code zero, but a collector that disguises a failure as a successful empty list still needs health evidence.
+
+## Chinese-text requirement
+
+- For every field listed in a plan item's `required_fields`, produce Chinese display text regardless of the source language, including Russian and other non-English text. Translate substantive text in full; adding a Chinese prefix to untranslated prose is not a translation.
+- For a field containing only a URL, preserve the URL exactly and use `（链接）https://t.co/...`. For a link-only repost wrapper, use `转发 @user：（链接）https://t.co/...`; preserve handles and links without inventing the linked content.
+- Validation checks for Unicode Han characters, not language or translation quality. The existing `auto` policy skips text containing any Han character, including mixed text and Japanese Kanji. Do not claim that all foreign-language text is guaranteed to be translated by this check; `never` remains an explicit opt-out.
+- The plan determines the fields: a Chinese main tweet with a Russian quote can require only `quoted_text_zh`, with no `title` entry. Preserve the main/quote split and use the canonical quote key.
+
+## Scheduled operation
+
+- Use one unique run directory per attempt. Serialize runs sharing a state/output directory through finalize and export; separate artifact directories and `state_snapshot` checks are not a cross-process lock.
+- Keep scheduler-owned slot evidence separately from the daily news state, for example `<RUN_DIR>/schedule.json`: planned slot(s) with timezone, actual start/end time, run id, outcome, and any slots targeted by catch-up. Match queued reminders against this evidence and finalized `runs` before collecting. A reminder count or run count alone cannot establish which slots are missing; report unknown coverage when evidence is absent.
+- Coalesce genuinely missed slots into a catch-up run when appropriate, with the actual collection time and intended missing slots recorded. Do not backdate `generated_at`, manufacture completed runs, or describe catch-up as having run every scheduled slot. Current feeds may no longer contain every story available during the missed window.
+- Quarantine unusable or corrupt run artifacts; retain diagnostics and exclude them from publication. Do not hand-patch run identity, validation receipts, or daily state to force success. Follow the bounded prepare, translation-repair, and finalize recovery rules below; a single-source failure, legitimate zero updates, or permitted partial translation is not automatically a corrupt run.
+- Export only after successful finalize. A write failure can leave some local outputs updated because finalize is not a multi-file transaction: stop, retain artifacts, and report the affected paths for reconciliation. Do not assume that deleting a failed run directory restores daily outputs or that clearing daily state is safe.
 
 ## Workflow
 
@@ -78,32 +101,33 @@ Non-recoverable prepare codes:
    - `run_id` / `started_at` / `finished_at`: immutable run identity fields. Downstream steps must preserve them exactly.
    - `run_output_stem`: deterministic `YYYY-MM-DD-HH-mm-ss-<sha256前12位>` stem derived from `generated_at + run_id`; use it for per-run output names.
    - `section_metadata`: immutable per-run snapshot of source display/classification/translation metadata; downstream steps must use this snapshot rather than reread a mutable config.
+   - `active_section_order`: this run's configured source order; `section_order`: active sources followed by retired sources that still have daily news. Per-run Markdown uses only the active order.
+   - `daily_section_metadata`: prepared snapshot combining current and historical source metadata for the daily Markdown and sidecar.
    - `state_snapshot`: the latest finalized daily state seen during `prepare`. `finalize` will reject stale snapshots.
 8. Translate display text into Chinese in-model:
-   - Create the initial deterministic plan. The script derives required fields and keeps the existing `auto` rule that any title containing a Unicode Han character (including mixed-language text) does not need title translation, while still planning an English quote or Bloomberg summary when required. This is a character check, not language detection: Japanese text containing Kanji also satisfies it.
+   - Create the initial deterministic plan. The script derives required fields under the Chinese-text requirement above; a title skipped by `auto` may still have a quote or Bloomberg summary requiring translation.
 
 ```bash
 python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" plan-translations --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>" --out-json "<RUN_DIR>/translation-plan.json" --phase initial
 ```
 
    - Translate each `batches[*].items` in `translation-plan.json`. The plan counts only required source text from titles, quotes, and summaries. Up to `batch_source_char_limit` (currently 12,000 characters) stays in one batch; larger input is split by source-text capacity. No item is truncated or summarized to fit, and one oversized item remains intact in its own batch.
-   - Write each model result as `<RUN_DIR>/translation-initial-batch-NNN.json`, using exactly the batch's `expected_urls` as its top-level URL keys. Do not add, omit, or substitute a URL.
-   - Merge each batch only through the script, which checks the exact URL set and required fields before atomically updating the cumulative map:
+   - Write each model result as `<RUN_DIR>/translation-initial-batch-NNN.json`. Construct top-level keys programmatically from the corresponding plan item's `url`, and verify the exact `expected_urls` set. Never retype, normalize, or reconstruct URLs. Associate each translation with its URL; do not blindly zip responses by position or silently drop mismatched counts.
+   - Merge every planned batch through the script below, one at a time, waiting for success before starting the next merge. Do not hard-code a batch count, stop after the first batch, run merges concurrently, or overwrite the cumulative map with a single batch. The script checks the exact URL set and required fields before atomically updating that map:
 
 ```bash
 python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" merge-translation-batch --plan-json "<RUN_DIR>/translation-plan.json" --batch-id batch-NNN --batch-json "<RUN_DIR>/translation-initial-batch-NNN.json" --translated-json "<TRANSLATED_JSON_PATH>"
 ```
 
-   - For every planned item whose `required_fields` includes `title`, translate `title`.
-   - For Twitter quote items, translate quote text when present.
-   - For Twitter items, `title` always means the main tweet `text`, and `quoted_text` always means `quotedTweet.text`. Never swap them.
+   - Generate each item's fields from `required_fields`; do not assume every item needs `title`. Use `quoted_text_zh` for a required quote and `summary` or `summary_zh` for a required summary.
+   - For Twitter items, `title` always means the main tweet `text`, and `quoted_text_zh` always translates `quotedTweet.text`. Never swap them.
    - For long Twitter posts, translate the main tweet and quoted tweet in full, preserving paragraph boundaries / numbering when practical. Do not summarize, compress, or rewrite them into a shorter takeaway sentence.
-   - For Bloomberg items with `summary`, translate `summary` too; final Markdown displays the translated summary under the Bloomberg item.
+   - For Bloomberg items whose plan requires `summary`, translate it too; final Markdown displays the translated summary under the Bloomberg item.
    - Translation must stay in the model, not inside any script.
-   - Write a JSON object into `<TRANSLATED_JSON_PATH>`:
+   - The script-maintained cumulative `<TRANSLATED_JSON_PATH>` is a JSON object:
      - Legacy format (still supported): map URL to translated title string.
      - Extended format (recommended): map URL to object with `title`, optional quote fields, and optional `summary` / `summary_zh`.
-   - If `items_to_translate` is empty, still write `{}` to `<TRANSLATED_JSON_PATH>`.
+   - An empty initial plan initializes `{}` when the cumulative map does not exist; do not erase an existing map when redoing prepare.
 
 9. Validate translated map before finalize:
 
@@ -119,7 +143,7 @@ Validation workflow:
 python3 "<SKILL_ROOT>/scripts/run_incremental_news.py" plan-translations --incremental-json "<INCREMENTAL_JSON_PATH>" --translated-json "<TRANSLATED_JSON_PATH>" --out-json "<RUN_DIR>/translation-repair-plan.json" --phase repair
 ```
 
-- Translate and merge each repair batch with `merge-translation-batch`, using `translation-repair-batch-NNN.json` and `translation-repair-plan.json`. Do not directly edit the cumulative map or create another repair plan.
+- Translate and serially merge every repair batch with `merge-translation-batch`, using `translation-repair-batch-NNN.json` and `translation-repair-plan.json`. Apply the same exact-URL and required-field rules as initial batches. Do not directly edit the cumulative map or create another repair plan.
 - Run `validate-translations` exactly one more time after repair.
 - Validation automatically records hidden run-scoped state in `translation-validation.json`. Do not edit it. If initial validation has issues, `finalize` rejects the run until one repair plan and a second validation have been completed.
 - Translation diagnostics remain in the hidden validation state; they are not rendered in Markdown or news-reader sidecar `errors`. Recovered collection records remain in machine JSON and the daily sidecar but are not rendered in Markdown; final collection failures remain visible.
@@ -153,6 +177,7 @@ python3 "<SKILL_ROOT>/scripts/export_outputs.py" --daily "<daily_fresh_path>" --
 ```
 
 Export rules:
+- Read `daily_fresh_path` and `run_fresh_path` directly from this successful finalize's JSON output and pass those exact, quoted paths to export. Never use globs, reconstructed timestamps, or a latest-file search. Export obtains the daily sidecar from that exact daily path.
 - Export copies the daily Markdown, per-run fresh Markdown, and the daily `.newsreader.json` sidecar. Per-run freshNews has no sidecar and export must not require or copy one.
 - Export root precedence is: `--target-root` CLI argument, `NEWSFLOW_EXPORT_ROOT`, then the legacy personal default `/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Documents/DailyNews`.
 - When the legacy default is used, the command prints a compatibility warning to stderr; pass an explicit root for portable use.
@@ -206,7 +231,7 @@ Non-recoverable finalize codes:
 
 - Daily state file path: `<STATE_DIR>/YYYY-MM-DD.json`.
 - Top-level keys are daily aggregates and metadata, for example:
-  - `date`, `timezone`, `section_order`
+  - `date`, `timezone`, `active_section_order`, `section_order`, `section_metadata`
   - `today_seen_urls`, `today_first_seen_items`
   - `daily_errors`
   - `runs` (array of per-run summaries)
@@ -219,10 +244,13 @@ Non-recoverable finalize codes:
   - Read `runs[-1].run_fresh_path` / `runs[-1].daily_fresh_path` for output files.
   - New runs also record audit fields such as `run_id`, `current_json_path`, `incremental_json_path`, `translated_json_path`, `prepared_at`, and `finalized_at`.
 - If `runs` is empty, treat run-level stats as unavailable rather than `0`.
+- Source changes require no manual daily-state edits. Active sources follow the current config order; retired sources with daily news remain in the daily output after them. Retired empty groups disappear from no-update lists. Existing items, exact dedupe URLs, and prior run records are retained, including on rename or re-enabling a source.
+- Daily state now persists historical `section_metadata`. For older states, prepare recovers missing display metadata from matching historical run artifacts under this state directory, falling back to item metadata when those artifacts are unavailable. It never rereads the current config to invent a retired source's identity. Missing metadata for an actively configured source remains an error.
+- Prepare does not rewrite daily state. An incremental artifact produced before this separation may still contain mixed current/historical sections; rerun prepare with the same original current JSON after upgrading, regenerate the translation plan against the new incremental artifact, and reuse existing translations as the base. Existing stale-run/state-conflict checks still apply.
 
 ## commands.json Format
 
-The bundled v1.2.4 default config has 17 ordered source entries, including 9 Twitter accounts.
+The bundled v1.2.5 default config has 17 ordered source entries, including 9 Twitter accounts.
 
 Use JSON array of objects:
 
@@ -300,7 +328,7 @@ Constraints:
 - Missing time must be `页面未显示`.
 - Bloomberg summaries should be rendered in Chinese when translation is available. The translation map may use `summary` or `summary_zh`; `summary_zh` is preferred for clarity.
 - If a non-Chinese Bloomberg summary is present but its translated summary is missing or still non-Chinese after one repair attempt, `finalize` writes the original source summary without adding a user-visible error.
-- Preserve first-seen order: command order first, then source order.
+- Preserve first-seen items and URL ownership. Sections follow current command order, then populated retired groups in historical order; source removal or rename does not reassign already collected items.
 - Global dedupe key is absolute URL exact match.
 - Daily filtering removes yesterday's URLs.
 - Per-run filtering removes yesterday's URLs and URLs seen earlier the same day.

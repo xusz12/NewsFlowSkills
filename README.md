@@ -1,6 +1,6 @@
 # NewsFlowSkills
 
-当前版本：**v1.2.4**（2026-10-18）。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.2.5**（2026-10-18）。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 `newsflow` 按配置顺序采集多个新闻源，做全局 URL 去重、日内增量状态管理与模型内中文翻译，最终生成 daily 与 per-run 两类 Markdown；finalize 后可选导出。
 
@@ -16,6 +16,7 @@ newsflow 是一套面向多新闻源的可恢复增量采集与中文化工作�
 - 按绝对 URL 全局去重，并结合前一日与当日状态只输出本轮新增内容。
 - 通过模型生成中文标题、Twitter 引用翻译与 Bloomberg 摘要翻译，不接入第三方翻译 API。
 - 为每轮运行保留独立工件、翻译验证证据和恢复信息，避免旧工件或并发状态造成静默数据错误。
+- 支持同日增删、改名及重排来源：保留已采新闻、去重 URL 和历史运行记录，停用来源不再出现在本轮无更新列表中。
 - 同时生成每日累计简报、本轮增量简报与每日累计 news-reader sidecar，并可选导出。
 
 ## 适用场景与边界
@@ -60,14 +61,18 @@ finalize 成功后，workspace 中会出现：
 
 1. **读取配置并顺序采集**：读取包含显示名、来源身份、命令、重试门槛和翻译策略的单一来源配置，按顺序执行；单个来源失败会被记录，但不会阻断后续来源。
 2. **全局去重并生成 current**：按绝对 URL 保留首次出现的条目，并把本轮规范化 `section_metadata` 快照与不可变 run metadata 一起写入 `current.json`。
-3. **Prepare 日内增量**：对比已有 `.news_state`，过滤前一日和当日已见 URL，得到本轮新增条目、待翻译字段、采集错误与 state snapshot，写入 `incremental.json`。
+3. **Prepare 日内增量**：对比已有 `.news_state`，过滤前一日和当日已见 URL，得到本轮新增条目、待翻译字段、采集错误与 state snapshot，写入 `incremental.json`。分别保存本轮启用来源与日报历史来源快照；prepare 不写回日状态。
 4. **Initial translation plan、capacity batches 与 exact merge**：脚本按标题、引用和摘要的源文字总量规划批次；12,000 字符以内使用单批，超出时才拆分，且不截断长文本。模型只翻译计划要求的字段，脚本验证每批 URL 集合与字段后原子合并到 `translated.json`。
 5. **Validate 与一次 repair**：检查翻译覆盖和必需中文字段。若有缺口，只允许生成一次 repair plan、补剩余字段并再 validate 一次；不无限循环。
-6. **Finalize 原子落盘**：确认工件路径、run metadata 与 state snapshot 仍有效，再原子写 daily/per-run Markdown、daily sidecar 和日状态；不生成 per-run sidecar。
-7. **可选 export**：finalize 成功后，可显式把两个 Markdown 与 daily sidecar 复制到 DailyNews 的对应月份目录。
+6. **Finalize 原子落盘**：确认工件路径、run metadata 与 state snapshot 仍有效，再落盘输出与状态；daily Markdown、daily sidecar 和日状态分别原子替换，fresh 文件禁止覆盖。这些文件不构成一个整体事务，写入失败必须核对已写产物；不生成 per-run sidecar。
+7. **可选 export**：finalize 成功后，读取返回 JSON 的精确 daily/fresh 路径，把两个 Markdown 与 daily sidecar 复制到 DailyNews 的对应月份目录；禁止通配符或按时间猜测文件。
 
 ## 恢复与安全语义
 
+- 源清单变动不需要手工删除状态分组。本轮按当前配置排序，日报在其后保留仍有新闻的停用分组。旧日状态优先从匹配的历史 run 快照恢复来源显示名，历史工件缺失时使用条目元数据回退；当前启用来源缺少元数据仍报错。旧 incremental 如混入历史分组，应使用原 current 重新 prepare，再重建翻译计划并复用已完成译文。
+- 日状态持久保存来源元数据，保留已有条目的原文摘要、中文引用及扩展字段；不清空历史新闻、已见 URL、错误诊断或 prior runs。
+- 有浏览器来源时先做真实桥接预检，不能用 `pgrep` 代替；`curl` 的 `000` 只表示未收到响应码，不直接判定无网络出口。中文字段逐项按 `required_fields` 生成，纯链接加中文说明，其他语言的正文完整翻译；Han 检查仍不等于语言识别。
+- 定时调度方应串行处理共享状态的运行，单独记录 slot 与补采证据；独立 run 目录不提供互斥锁。坏工件隔离留证，有限恢复按既有错误码执行；补采只记录真实采集时间，不能宣称补齐了全部历史覆盖。
 - 三个 RSS 来源（`BloombergUser tech`、`TechcrunchPublic news`、`ArsPublic news`）由 NewsFlow 统一重试：单次命令上限 25 秒，最多两次尝试，临时失败后等待 5–7 秒；服务器要求更久时遵守 `Retry-After`，超过 30 秒等待预算则记录截止时间并继续其他来源。对应本机 RSS adapter 每次只发一次请求，15 秒覆盖请求及响应读取。
 - 权限/验证、404、格式错误和空结果不重试；Reuters 列表已有内部恢复，默认关闭 NewsFlow 的额外外层重试。其他来源和全局 `--timeout` 默认 300 秒保持不变，X 的备用采集路径保留。
 - `command_timeout_seconds` 可对单个来源收紧全局命令超时；`timings` 输出尝试次数、等待时间和跳过重试原因。长冷却会写入可读错误，不会被 fallback 提前绕过；冷却不跨独立运行持久化。
@@ -144,10 +149,10 @@ npx -y skills add xusz12/NewsFlowSkills -a pi -y
 只有在复现特定发布或排查 installer 差异时，才同时 pin installer 版本与 tag/commit：
 
 ```bash
-npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.4 -s newsflow -a codex --copy -y
+npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.5 -s newsflow -a codex --copy -y
 ```
 
-其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.2.4` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
+其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.2.5` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
 
 版本使用 `vMAJOR.MINOR.PATCH` 格式。发布时同步 README、CHANGELOG 与 payload 的版本和来源说明，完成离线测试，再以简体中文提交并创建带日期、变更摘要和验证结果的 annotated tag。
 

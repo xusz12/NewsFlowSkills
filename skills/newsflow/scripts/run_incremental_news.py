@@ -457,7 +457,74 @@ def normalize_section_metadata(
                 item.get("translation_policy", "auto")
             ),
         }
+        if item.get("source_handle"):
+            normalized[section]["source_handle"] = item["source_handle"]
     return normalized
+
+
+def daily_section_order(
+    active_sections: list[str],
+    previous_sections: list[str],
+    items: list[dict[str, str]],
+) -> list[str]:
+    """Use current config order, then retired sections that still have daily news."""
+    populated = section_order_from_items(items)
+    return merge_section_order(
+        active_sections,
+        [section for section in previous_sections if section in populated],
+        populated,
+    )
+
+
+def historical_section_metadata(
+    state: dict[str, Any], state_dir: Path, required_sections: list[str]
+) -> dict[str, dict[str, str]]:
+    """Recover old display snapshots without consulting the mutable source config."""
+    metadata = normalize_section_metadata(state.get("section_metadata"), [], [])
+    missing = set(required_sections) - metadata.keys()
+    # Old daily states did not save metadata. Prefer the latest matching run
+    # snapshot; missing/pruned artifacts must not prevent keeping historic news.
+    for run in reversed(state["runs"]):
+        if not missing:
+            break
+        for key in ("current_json_path", "incremental_json_path"):
+            path_text = str(run.get(key, "")).strip()
+            if not path_text:
+                continue
+            try:
+                path = Path(path_text).expanduser().resolve()
+                if path.parent.parent != get_runs_root(state_dir):
+                    continue
+                snapshot = load_json_file(path)
+                if not isinstance(snapshot, dict) or not run.get("run_id"):
+                    continue
+                if any(snapshot.get(field) != run.get(field) for field in ("run_id", "generated_at")):
+                    continue
+                raw_metadata = snapshot.get("section_metadata")
+                if not isinstance(raw_metadata, dict):
+                    continue
+                for section in required_sections:
+                    if section not in missing or section not in raw_metadata:
+                        continue
+                    try:
+                        recovered = normalize_section_metadata(
+                            {section: raw_metadata[section]}, [section], []
+                        )
+                    except ValueError:
+                        continue
+                    metadata.update(recovered)
+                    missing.remove(section)
+            except (OSError, ValueError, RuntimeError):
+                continue
+    # Only historical sections may use item-derived metadata. Current config
+    # metadata is validated separately and never repaired by this fallback.
+    inferred = normalize_section_metadata(
+        None, [], state["today_first_seen_items"]
+    )
+    for section in required_sections:
+        if section in missing and section in inferred:
+            metadata[section] = inferred[section]
+    return metadata
 
 
 def parse_sortable_time(text: str) -> datetime | None:
@@ -525,6 +592,7 @@ def load_state(state_path: Path, date_text: str, timezone_name: str) -> dict[str
             "date": date_text,
             "timezone": timezone_name,
             "section_order": [],
+            "section_metadata": {},
             "today_seen_urls": [],
             "today_first_seen_items": [],
             "daily_errors": [],
@@ -536,25 +604,27 @@ def load_state(state_path: Path, date_text: str, timezone_name: str) -> dict[str
         raise ValueError(f"State file must contain an object: {state_path}")
 
     return {
+        **raw,
         "date": str(raw.get("date", date_text)).strip() or date_text,
         "timezone": str(raw.get("timezone", timezone_name)).strip() or timezone_name,
         "section_order": normalize_section_order(raw.get("section_order", [])),
+        "section_metadata": normalize_section_metadata(raw.get("section_metadata"), [], []),
         "today_seen_urls": [
             str(url).strip()
             for url in raw.get("today_seen_urls", [])
             if str(url).strip()
         ],
+        # Retain finalized-only fields (summary_raw, quoted_text_zh) and any
+        # provenance extensions alongside the normalized legacy fields.
         "today_first_seen_items": [
-            item
-            for item in (
-                normalize_item(entry) for entry in raw.get("today_first_seen_items", [])
-            )
-            if item is not None
+            {**entry, **item}
+            for entry in raw.get("today_first_seen_items", [])
+            if (item := normalize_item(entry)) is not None
         ],
         "daily_errors": [
-            err
-            for err in (normalize_error(entry) for entry in raw.get("daily_errors", []))
-            if err is not None
+            {**entry, **err}
+            for entry in raw.get("daily_errors", [])
+            if (err := normalize_error(entry)) is not None
         ],
         "runs": [
             entry
@@ -1609,7 +1679,6 @@ def prepare_incremental(args: argparse.Namespace) -> int:
                 f"run_id already finalized for today: {run_meta['run_id']}"
             )
 
-    merged_section_order = merge_section_order(today_state["section_order"], current_section_order)
     today_seen_before = set(today_state["today_seen_urls"])
     yesterday_urls = set(yesterday_state["today_seen_urls"])
 
@@ -1632,6 +1701,16 @@ def prepare_incremental(args: argparse.Namespace) -> int:
     daily_fresh_urls.update(item["url"] for item in run_fresh_items_raw)
 
     daily_errors = today_state["daily_errors"] + current_errors
+    historic_daily_items = [
+        item for item in today_state["today_first_seen_items"] if item["url"] not in yesterday_urls
+    ]
+    merged_section_order = daily_section_order(
+        current_section_order, today_state["section_order"], historic_daily_items + run_fresh_items_raw
+    )
+    daily_metadata = historical_section_metadata(
+        today_state, state_dir, section_order_from_items(historic_daily_items)
+    )
+    daily_metadata.update(section_metadata)
 
     payload = {
         "date": date_text,
@@ -1640,8 +1719,10 @@ def prepare_incremental(args: argparse.Namespace) -> int:
         "finished_at": run_meta["finished_at_text"],
         "generated_at": run_meta["generated_at_text"],
         "timezone": timezone_name,
+        "active_section_order": current_section_order,
         "section_order": merged_section_order,
         "section_metadata": section_metadata,
+        "daily_section_metadata": daily_metadata,
         "run_output_stem": run_output_stem,
         "run_file_timestamp": run_file_timestamp,
         "current_run_items_raw": current_items,
@@ -1831,12 +1912,6 @@ def finalize_incremental(args: argparse.Namespace) -> int:
                 f"Run already finalized for run_id: {run_id}",
             )
 
-    merged_section_order = merge_section_order(
-        today_state["section_order"],
-        normalize_section_order(raw_payload.get("section_order", [])),
-        section_order_from_items(today_state["today_first_seen_items"]),
-    )
-
     current_run_items_raw = [
         item
         for item in (
@@ -1860,10 +1935,23 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         if item is not None
     ]
     try:
+        # Old self-contained incremental artifacts retain their strict contract;
+        # rerun prepare for old artifacts with mixed current/historical sections.
+        if "active_section_order" in raw_payload:
+            if not isinstance(raw_payload["active_section_order"], list):
+                raise ValueError("active_section_order must contain an array")
+            if not isinstance(raw_payload.get("section_metadata"), dict):
+                raise ValueError("section_metadata must contain an object")
+        active_section_order = merge_section_order(
+            normalize_section_order(
+                raw_payload.get("active_section_order", raw_payload.get("section_order", []))
+            ),
+            section_order_from_items(current_run_items_raw),
+        )
         section_metadata = normalize_section_metadata(
             raw_payload.get("section_metadata"),
-            normalize_section_order(raw_payload.get("section_order", [])),
-            current_run_items_raw + today_state["today_first_seen_items"],
+            active_section_order,
+            current_run_items_raw,
         )
     except ValueError as exc:
         raise incremental_error("FINALIZE_BAD_INCREMENTAL_METADATA", str(exc)) from exc
@@ -1875,11 +1963,9 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         if err is not None
     ]
     daily_errors = [
-        err
-        for err in (
-            normalize_error(entry) for entry in raw_payload.get("daily_errors", [])
-        )
-        if err is not None
+        {**entry, **err}
+        for entry in raw_payload.get("daily_errors", [])
+        if (err := normalize_error(entry)) is not None
     ]
     # Translation diagnostics stay in translation-validation.json, not user outputs.
 
@@ -1910,6 +1996,25 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         item for item in today_first_seen_items if item["url"] not in yesterday_urls
     ]
     run_fresh_items_final = [finalize_item(item, translations) for item in run_fresh_items_raw]
+    merged_section_order = daily_section_order(
+        active_section_order, today_state["section_order"], daily_fresh_items_final
+    )
+    try:
+        if "daily_section_metadata" in raw_payload:
+            if not isinstance(raw_payload["daily_section_metadata"], dict):
+                raise ValueError("daily_section_metadata must contain an object")
+            daily_metadata = normalize_section_metadata(
+                raw_payload["daily_section_metadata"],
+                [section for section in merged_section_order if section not in active_section_order],
+                [],
+            )
+        else:
+            daily_metadata = historical_section_metadata(
+                today_state, state_dir, section_order_from_items(daily_fresh_items_final)
+            )
+        daily_metadata.update(section_metadata)
+    except ValueError as exc:
+        raise incremental_error("FINALIZE_BAD_INCREMENTAL_METADATA", str(exc)) from exc
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1925,7 +2030,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         )
 
     run_fresh_markdown = build_markdown(
-        merged_section_order,
+        active_section_order,
         run_fresh_items_final,
         current_run_errors,
         section_metadata,
@@ -1934,7 +2039,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         merged_section_order,
         daily_fresh_items_final,
         daily_errors,
-        section_metadata,
+        daily_metadata,
     )
     daily_sidecar_payload = build_newsreader_sidecar(
         schema_version="newsreader.daily.v1",
@@ -1947,7 +2052,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         items_final=daily_fresh_items_final,
         translations=translations,
         errors=daily_errors,
-        section_metadata=section_metadata,
+        section_metadata=daily_metadata,
     )
     try:
         write_text_new_file(run_fresh_path, run_fresh_markdown)
@@ -1986,9 +2091,12 @@ def finalize_incremental(args: argparse.Namespace) -> int:
     )
 
     state_payload = {
+        **today_state,
         "date": date_text,
         "timezone": timezone_name,
+        "active_section_order": active_section_order,
         "section_order": merged_section_order,
+        "section_metadata": daily_metadata,
         "today_seen_urls": today_seen_urls,
         "today_first_seen_items": today_first_seen_items,
         "daily_errors": daily_errors,
@@ -2007,6 +2115,7 @@ def finalize_incremental(args: argparse.Namespace) -> int:
         "finished_at": run_meta["finished_at_text"],
         "generated_at": generated_at,
         "timezone": timezone_name,
+        "active_section_order": active_section_order,
         "section_order": merged_section_order,
         "run_artifact_dir": str(incremental_run_dir),
         "run_fresh_path": str(run_fresh_path),

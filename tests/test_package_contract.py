@@ -109,7 +109,7 @@ def test_readme_documents_project_lifecycle() -> None:
     assert "让 agent 使用 `$newsflow`" in content
     assert "当前仍是本地候选版本" not in content
     assert "当前默认配置包含 17 个采集入口，其中 X/Twitter 9 个" in content
-    assert "当前版本：**v1.2.4**（2026-10-18）" in content
+    assert "当前版本：**v1.2.5**（2026-10-18）" in content
     assert "只保留在机器 JSON、日状态与 daily sidecar，不显示在 Markdown" in content
     assert "dailyFreshNews_YYYY-MM-DD.newsreader.json" in content
     assert "YYYY-MM-DD-HH-mm-ss-<sha256前12位>_freshNews.newsreader.json" not in content
@@ -125,7 +125,7 @@ def test_readme_documents_project_lifecycle() -> None:
     assert "主分支只接收已经 Review 的稳定内容" in content
     assert "必须恢复 `-s newsflow`" in content
     assert (
-        "npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.4 "
+        "npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.5 "
         "-s newsflow -a codex --copy -y"
     ) in content
     assert "npx -y skills add /Users/x/.skills/newsflow -a codex -y" in content
@@ -143,6 +143,6 @@ def test_legacy_sync_entrypoint_is_removed() -> None:
 
 def test_skill_documents_current_default_source_count() -> None:
     content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-    assert "Version: v1.2.4." in content
-    assert "v1.2.4 default config has 17 ordered source entries" in content
+    assert "Version: v1.2.5." in content
+    assert "v1.2.5 default config has 17 ordered source entries" in content
     assert "including 9 Twitter accounts" in content
