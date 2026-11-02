@@ -347,8 +347,8 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             and entry.get("command", [None, None])[:2] == ["opencli", "twitter"]
         ]
         self.assertTrue(twitter_entries, "expected twitter sources in default commands.json")
-        self.assertEqual(len(entries), 17)
-        self.assertEqual(len(twitter_entries), 9)
+        self.assertEqual(len(entries), 12)
+        self.assertEqual(len(twitter_entries), 4)
         handles = [entry["command"][3] for entry in twitter_entries]
         self.assertEqual(len(handles), len(set(handles)), "twitter handles must be unique")
         self.assertEqual(
@@ -356,27 +356,20 @@ class NewsWorkflowSafetyTests(unittest.TestCase):
             [
                 "ilyasut",
                 "mingchikuo",
-                "ivanalog_com",
                 "fxtrader",
-                "Time_HorizonX",
                 "WaylandZhang",
-                "LinQingV",
-                "ChinaMacroFacts",
-                "MacroMargin",
             ],
         )
         expected_names = {
             "ilyasut": "Ilya Sutskever",
             "mingchikuo": "郭明錤",
-            "ivanalog_com": "seekinganythingbutalpha",
             "fxtrader": "外汇交易员",
-            "Time_HorizonX": "Time Horizon",
             "WaylandZhang": "WaylandZhang",
-            "LinQingV": "Macro_Lin",
-            "ChinaMacroFacts": "中国政经事实ChinaFacts",
-            "MacroMargin": "宏观边际MacroMargin",
         }
-        removed_handles = {"jakevin7", "cyrilxuq", "HuXijin_GT", "aleabitoreddit", "kaptonia", "Areskapitalon"}
+        removed_handles = {
+            "jakevin7", "cyrilxuq", "HuXijin_GT", "aleabitoreddit", "kaptonia", "Areskapitalon",
+            "Time_HorizonX", "LinQingV", "ChinaMacroFacts", "MacroMargin", "ivanalog_com",
+        }
         self.assertTrue(removed_handles.isdisjoint(handles))
         self.assertTrue(
             all(

@@ -2,6 +2,12 @@
 
 版本标签使用 `vMAJOR.MINOR.PATCH`。日期采用 `Asia/Shanghai`，历史版本日期以对应 Git 提交记录为准。
 
+## v1.2.6（2026-11-02）— 精简 X 采集账号
+
+- 按用户要求移除 `Time_HorizonX`、`LinQingV`、`ChinaMacroFacts`、`MacroMargin`、`ivanalog_com` 五个 X 来源及其备用命令。
+- 默认配置调整为 12 个采集入口，其中 X/Twitter 4 个；保留 `ilyasut`、`mingchikuo`、`fxtrader`、`WaylandZhang`。其他来源与既有历史数据保留。
+- 验证：15 项相关离线检查通过，覆盖默认配置、主／备用路径及删除来源后的历史保留；未执行真实采集。
+
 ## v1.2.5（2026-10-18）— 源清单变动兼容与运行说明
 
 ### 修复

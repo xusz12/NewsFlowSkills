@@ -232,12 +232,12 @@ def test_plain_legacy_errors_are_selective(pipeline):
 
 def test_only_three_rss_timeouts_change_and_reuters_avoids_nested_retry(pipeline, clock, monkeypatch):
     entries=pipeline.load_config(CONFIG)
-    assert len(entries)==17
+    assert len(entries)==12
     calls=[]
     def execute(command,**kwargs):calls.append((command,kwargs['timeout']));return success('https://example.com/'+str(len(calls)))
     monkeypatch.setattr(pipeline.subprocess,'run',execute)
     run(pipeline,entries)
-    assert len(calls)==17
+    assert len(calls)==12
     for ent,(_,timeout) in zip(entries,calls):
         assert timeout==(25 if ent['section'] in TARGETS else 300)
         if ent['source_type']=='reuters':assert ent['retry_once'] is False

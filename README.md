@@ -1,6 +1,6 @@
 # NewsFlowSkills
 
-当前版本：**v1.2.5**（2026-10-18）。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.2.6**（2026-11-02）。版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 `newsflow` 按配置顺序采集多个新闻源，做全局 URL 去重、日内增量状态管理与模型内中文翻译，最终生成 daily 与 per-run 两类 Markdown；finalize 后可选导出。
 
@@ -11,7 +11,7 @@ newsflow 是一套面向多新闻源的可恢复增量采集与中文化工作�
 核心能力：
 
 - 按 `commands.json` 的顺序串行执行多个采集命令；单个来源失败不会阻断后续来源。
-- 当前默认配置包含 17 个采集入口，其中 X/Twitter 9 个。
+- 当前默认配置包含 12 个采集入口，其中 X/Twitter 4 个。
 - 统一 Reuters、Bloomberg、TechCrunch、Ars 与 Twitter/X 等来源的数据结构。
 - 按绝对 URL 全局去重，并结合前一日与当日状态只输出本轮新增内容。
 - 通过模型生成中文标题、Twitter 引用翻译与 Bloomberg 摘要翻译，不接入第三方翻译 API。
@@ -149,10 +149,10 @@ npx -y skills add xusz12/NewsFlowSkills -a pi -y
 只有在复现特定发布或排查 installer 差异时，才同时 pin installer 版本与 tag/commit：
 
 ```bash
-npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.5 -s newsflow -a codex --copy -y
+npx -y skills@1.5.20 add xusz12/NewsFlowSkills#v1.2.6 -s newsflow -a codex --copy -y
 ```
 
-其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.2.5` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
+其他 runtime 把 `codex` 替换为 `claude-code`、`kimi-code-cli` 或 `pi`。复现其他版本时，把 `v1.2.6` 替换成目标 `<tag>` 或 commit。升级时重新执行目标版本的完整 add 命令，不使用旧 lock ref 做原地 update。
 
 版本使用 `vMAJOR.MINOR.PATCH` 格式。发布时同步 README、CHANGELOG 与 payload 的版本和来源说明，完成离线测试，再以简体中文提交并创建带日期、变更摘要和验证结果的 annotated tag。
 

@@ -222,37 +222,6 @@
     ]
   },
   {
-    "section": "seekinganythingbutalpha",
-    "display_name": "seekinganythingbutalpha",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "ivanalog_com",
-    "source_name": "seekinganythingbutalpha",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "ivanalog_com",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "ivanalog_com",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
     "section": "外汇交易员",
     "display_name": "外汇交易员",
     "translation_policy": "auto",
@@ -284,37 +253,6 @@
     ]
   },
   {
-    "section": "Time Horizon",
-    "display_name": "Time Horizon",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "Time_HorizonX",
-    "source_name": "Time Horizon",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "Time_HorizonX",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "Time_HorizonX",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
     "section": "WaylandZhang",
     "display_name": "WaylandZhang",
     "translation_policy": "auto",
@@ -339,99 +277,6 @@
       "twitter",
       "user-posts",
       "WaylandZhang",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
-    "section": "LinQingV",
-    "display_name": "LinQingV",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "LinQingV",
-    "source_name": "Macro_Lin",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "LinQingV",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "LinQingV",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
-    "section": "ChinaMacroFacts",
-    "display_name": "ChinaMacroFacts",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "ChinaMacroFacts",
-    "source_name": "中国政经事实ChinaFacts",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "ChinaMacroFacts",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "ChinaMacroFacts",
-      "-n",
-      "10",
-      "--full-text",
-      "--json"
-    ]
-  },
-  {
-    "section": "MacroMargin",
-    "display_name": "MacroMargin",
-    "translation_policy": "auto",
-    "source_type": "twitter",
-    "source_handle": "MacroMargin",
-    "source_name": "宏观边际MacroMargin",
-    "command": [
-      "opencli",
-      "twitter",
-      "tweets",
-      "MacroMargin",
-      "--limit",
-      "10",
-      "-f",
-      "json",
-      "--window",
-      "background",
-      "--site-session",
-      "persistent"
-    ],
-    "fallback_command": [
-      "twitter",
-      "user-posts",
-      "MacroMargin",
       "-n",
       "10",
       "--full-text",

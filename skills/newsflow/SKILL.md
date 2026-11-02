@@ -5,7 +5,7 @@ description: Run configurable opencli news commands sequentially, skip failed co
 
 # Newsflow
 
-Version: v1.2.5.
+Version: v1.2.6.
 
 ## Execution Setup
 
@@ -250,7 +250,7 @@ Non-recoverable finalize codes:
 
 ## commands.json Format
 
-The bundled v1.2.5 default config has 17 ordered source entries, including 9 Twitter accounts.
+The default config has 12 ordered source entries, including 4 Twitter accounts.
 
 Use JSON array of objects:
 
